@@ -67,7 +67,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 10) == -1) {
+    if (listen(server_fd, MAX_CLIENTS) == -1) {
         perror("listen failed");
         close(server_fd);
         exit(EXIT_FAILURE);
