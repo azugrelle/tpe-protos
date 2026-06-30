@@ -6,6 +6,8 @@
 #include "logger.h"
 #include "util.h"
 
+// es una especie de dig o host, que dado un nombre de host y un servicio, imprime la informacion de las direcciones (no intenta conectarse)
+// nosotros vamos a tener que intentar conectarnos tambien
 int
 main(int argc, char *argv[])
 {
@@ -26,9 +28,9 @@ main(int argc, char *argv[])
 	addrString = argv[1];
 
 	memset(&hint, 0, sizeof(hint));
-	hint.ai_flags = AI_CANONNAME;
+	hint.ai_flags = AI_CANONNAME; 
 	if ((err = getaddrinfo(addrString, service, &hint, &ailist)) != 0)
-		log(FATAL, "getaddrinfo error: %s", gai_strerror(err));
+		log(FATAL, "getaddrinfo error: %s", gai_strerror(err)); // gai_strerror es una funcion que convierte el error en un string legible
 	for (aip = ailist; aip != NULL; aip = aip->ai_next) {
 		printFlags(aip);
 		printf(" family: %s ", printFamily(aip));

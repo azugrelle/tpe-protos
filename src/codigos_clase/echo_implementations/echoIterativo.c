@@ -1,4 +1,4 @@
-// Cada iteración acepta a 1 solo cliente
+// Cada iteración acepta a 1 solo cliente. No es eficiente
 
 #include <stdio.h>
 #include <stdlib.h>

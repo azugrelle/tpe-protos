@@ -11,6 +11,7 @@
 
 int main(int argc, char *argv[]) {
 
+	// recibe el puerto a escuchar
 	if (argc != 2) {
 		log(FATAL, "usage: %s <Server Port>", argv[0]);
 	}

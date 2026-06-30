@@ -29,10 +29,10 @@ int tcpClientSocket(const char *host, const char *service) {
 	for (struct addrinfo *addr = servAddr; addr != NULL && sock == -1; addr = addr->ai_next) {
 		// Create a reliable, stream socket using TCP
 		sock = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
-		if (sock >= 0) {
+		if (sock >= 0) { // se pudo crear el socket, ahora intentamos conectarnos
 			errno = 0;
 			// Establish the connection to the server
-			if ( connect(sock, addr->ai_addr, addr->ai_addrlen) != 0) {
+			if ( connect(sock, addr->ai_addr, addr->ai_addrlen) != 0) { // no se pudo conectar, libero los recursos de ese socket y pruebo con el siguiente
 				log(INFO, "can't connectto %s: %s", printAddressPort(addr, addrBuffer), strerror(errno))
 				close(sock); 	// Socket connection failed; try next address
 				sock = -1;
