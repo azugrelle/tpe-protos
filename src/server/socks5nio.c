@@ -11,6 +11,8 @@
 #include <pthread.h>
 
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netdb.h>
 
 #include "hello.h"
 #include "request.h"
@@ -51,7 +53,16 @@ enum socks_v5state {
      */
     HELLO_WRITE,
 
-…
+    /**
+     * recibe el pedido `request' del cliente.
+     *
+     * Intereses:
+     *     - OP_READ sobre client_fd
+     *
+     * Para M1 es un estado *stub*: cierra la conexión. El parseo real del
+     * REQUEST se implementa en T21.
+     */
+    REQUEST_READ,
 
     // estados terminales
     DONE,
@@ -70,7 +81,17 @@ struct hello_st {
     uint8_t               method;
 } ;
 
-…
+/* `struct request_st' (usado por REQUEST_READ) se declara en request.h */
+
+/** usado por el estado de conexión al origin server (M3, T40) */
+struct connecting {
+    int placeholder;
+};
+
+/** usado por COPY / relay bidireccional (M3, T41) */
+struct copy {
+    int placeholder;
+};
 
 /*
  * Si bien cada estado tiene su propio struct que le da un alcance
@@ -81,7 +102,18 @@ struct hello_st {
  * liberarlo finalmente, y un pool para reusar alocaciones previas.
  */
 struct socks5 {
-…
+    /** información de la conexión con el cliente */
+    struct sockaddr_storage       client_addr;
+    socklen_t                     client_addr_len;
+    int                           client_fd;
+
+    /** resolución del origin server (DNS async, M3); se libera al destruir */
+    struct addrinfo              *origin_resolution;
+    /** información de la conexión con el origin server (M3) */
+    struct sockaddr_storage       origin_addr;
+    socklen_t                     origin_addr_len;
+    int                           origin_fd;
+
     /** maquinas de estados */
     struct state_machine          stm;
 
@@ -96,9 +128,60 @@ struct socks5 {
         struct connecting         conn;
         struct copy               copy;
     } orig;
-…
+
+    /** buffers crudos y sus vistas para I/O */
+    uint8_t                       raw_buff_a[2048], raw_buff_b[2048];
+    buffer                        read_buffer, write_buffer;
+
+    /** cantidad de referencias a este objeto; si es 1 se destruye */
+    unsigned                      references;
+
+    /** siguiente en el pool de reuso */
+    struct socks5                *next;
 };
 
+
+/** cantidad máxima de estructuras `socks5' guardadas en el pool de reuso */
+static const unsigned  max_pool  = 50;
+static unsigned        pool_size = 0;
+static struct socks5 * pool      = 0;
+
+static const struct state_definition *
+socks5_describe_states(void);
+
+/** crea un nuevo `struct socks5' (reutiliza del pool si hay disponible) */
+static struct socks5 *
+socks5_new(int client_fd) {
+    struct socks5 *ret;
+
+    if(pool == NULL) {
+        ret = malloc(sizeof(*ret));
+    } else {
+        ret       = pool;
+        pool      = pool->next;
+        ret->next = 0;
+    }
+    if(ret == NULL) {
+        goto finally;
+    }
+    memset(ret, 0x00, sizeof(*ret));
+
+    ret->origin_fd       = -1;
+    ret->client_fd       = client_fd;
+    ret->client_addr_len = sizeof(ret->client_addr);
+
+    ret->stm.initial     = HELLO_READ;
+    ret->stm.max_state   = ERROR;
+    ret->stm.states      = socks5_describe_states();
+    stm_init(&ret->stm);
+
+    buffer_init(&ret->read_buffer,  N(ret->raw_buff_a), ret->raw_buff_a);
+    buffer_init(&ret->write_buffer, N(ret->raw_buff_b), ret->raw_buff_b);
+
+    ret->references = 1;
+finally:
+    return ret;
+}
 
 /** realmente destruye */
 static void
@@ -217,6 +300,7 @@ hello_read_init(const unsigned state, struct selector_key *key) {
 
     d->rb                              = &(ATTACHMENT(key)->read_buffer);
     d->wb                              = &(ATTACHMENT(key)->write_buffer);
+    d->method                          = SOCKS_HELLO_NO_ACCEPTABLE_METHODS;
     d->parser.data                     = &d->method;
     d->parser.on_authentication_method = on_hello_method, hello_parser_init(
             &d->parser);
@@ -259,15 +343,59 @@ static unsigned
 hello_process(const struct hello_st* d) {
     unsigned ret = HELLO_WRITE;
 
-    uint8_t m = d->method;
+    const uint8_t m = d->method;
     const uint8_t r = (m == SOCKS_HELLO_NO_ACCEPTABLE_METHODS) ? 0xFF : 0x00;
     if (-1 == hello_marshall(d->wb, r)) {
-        ret  = ERROR;
+        ret = ERROR;
     }
-    if (SOCKS_HELLO_NO_ACCEPTABLE_METHODS == m) {
-        ret  = ERROR;
+    // Si el método es "no aceptable" igual pasamos por HELLO_WRITE para
+    // enviar el 0xFF; recién ahí cerramos (lo maneja hello_write → DONE).
+    return ret;
+}
+
+/** cierra el parser del hello al abandonar los estados HELLO_… */
+static void
+hello_read_close(const unsigned state, struct selector_key *key) {
+    struct hello_st *d = &ATTACHMENT(key)->client.hello;
+    hello_parser_close(&d->parser);
+}
+
+/** escribe la respuesta del `hello' y transiciona al próximo estado */
+static unsigned
+hello_write(struct selector_key *key) {
+    struct hello_st *d = &ATTACHMENT(key)->client.hello;
+
+    unsigned  ret = HELLO_WRITE;
+     uint8_t *ptr;
+      size_t  count;
+     ssize_t  n;
+
+    ptr = buffer_read_ptr(d->wb, &count);
+    n = send(key->fd, ptr, count, MSG_NOSIGNAL);
+    if(n == -1) {
+        ret = ERROR;
+    } else {
+        buffer_read_adv(d->wb, n);
+        if(!buffer_can_read(d->wb)) {
+            // terminamos de escribir la respuesta del hello.
+            if(SOCKS_HELLO_NO_ACCEPTABLE_METHODS == d->method) {
+                // ya enviamos 0xFF: cerramos la conexión (RFC 1928 §3).
+                ret = DONE;
+            } else if(SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ)) {
+                ret = REQUEST_READ;
+            } else {
+                ret = ERROR;
+            }
+        }
     }
     return ret;
+}
+
+/** stub del estado REQUEST_READ para M1; el parseo real llega en T21 */
+static unsigned
+request_read(struct selector_key *key) {
+    // Todavía no procesamos el request: cerramos limpio la conexión.
+    return DONE;
 }
 
 /** definición de handlers para cada estado */
@@ -278,7 +406,26 @@ static const struct state_definition client_statbl[] = {
         .on_departure     = hello_read_close,
         .on_read_ready    = hello_read,
     },
-…
+    {
+        .state            = HELLO_WRITE,
+        .on_write_ready   = hello_write,
+    },
+    {
+        .state            = REQUEST_READ,
+        .on_read_ready    = request_read,
+    },
+    {
+        .state            = DONE,
+    },
+    {
+        .state            = ERROR,
+    },
+};
+
+static const struct state_definition *
+socks5_describe_states(void) {
+    return client_statbl;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Handlers top level de la conexión pasiva.
