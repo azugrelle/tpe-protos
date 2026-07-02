@@ -24,7 +24,12 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
     (void) b;  // los estados de parseo todavía no consumen `b'.
     switch(p->state) {
         case request_version:
-            // TODO: VER debe ser 0x05.
+            // VER debe ser 0x05; si no, se rechaza el pedido.
+            if(SOCKS5_VERSION == b) {
+                p->state = request_cmd;
+            } else {
+                p->state = request_error_unsupported_version;
+            }
             break;
 
         case request_cmd:
