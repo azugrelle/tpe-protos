@@ -154,6 +154,39 @@ request_parser_close(struct request_parser *p) {
 }
 
 int
+request_marshall(buffer *b, const uint8_t rep, const uint8_t bnd_atyp,
+                 const uint8_t *bnd_addr, const uint16_t bnd_port) {
+    uint8_t addr_len;
+    if(SOCKS5_ATYP_IPV4 == bnd_atyp) {
+        addr_len = SOCKS5_IPV4_ADDR_LEN;
+    } else if(SOCKS5_ATYP_IPV6 == bnd_atyp) {
+        addr_len = SOCKS5_IPV6_ADDR_LEN;
+    } else {
+        // BND.ADDR solo puede ser IPv4 o IPv6 en la respuesta.
+        return -1;
+    }
+
+    const size_t total = 4 + addr_len + SOCKS5_PORT_LEN;
+    size_t   n;
+    uint8_t *buff = buffer_write_ptr(b, &n);
+    if(n < total) {
+        return -1;
+    }
+
+    buff[0] = SOCKS5_VERSION;
+    buff[1] = rep;
+    buff[2] = 0x00;       // RSV
+    buff[3] = bnd_atyp;
+    memcpy(buff + 4, bnd_addr, addr_len);
+    // BND.PORT en network byte order (big-endian), byte a byte.
+    buff[4 + addr_len]     = (uint8_t)(bnd_port >> 8);
+    buff[4 + addr_len + 1] = (uint8_t)(bnd_port & 0xFF);
+
+    buffer_write_adv(b, total);
+    return (int)total;
+}
+
+int
 request_addr_to_string(const struct request_parser *p, char *out, size_t outlen) {
     if(SOCKS5_ATYP_IPV4 == p->atyp) {
         return inet_ntop(AF_INET, p->dst_addr, out, (socklen_t)outlen) == NULL

@@ -244,6 +244,70 @@ START_TEST (test_addr_to_string_no_space) {
 }
 END_TEST
 
+START_TEST (test_marshall_success_ipv4) {
+    uint8_t raw[32];
+    buffer b;
+    buffer_init(&b, sizeof(raw), raw);
+    uint8_t bnd[4] = {0,0,0,0};
+    int n = request_marshall(&b, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV4, bnd, 0);
+
+    ck_assert_int_eq(10, n);  // 4 + 4 + 2
+    size_t avail;
+    uint8_t *out = buffer_read_ptr(&b, &avail);
+    ck_assert_uint_eq(10, avail);
+    uint8_t expected[] = {0x05,0x00,0x00,0x01, 0,0,0,0, 0,0};
+    ck_assert_int_eq(0, memcmp(out, expected, sizeof(expected)));
+}
+END_TEST
+
+START_TEST (test_marshall_port_network_order) {
+    uint8_t raw[32];
+    buffer b;
+    buffer_init(&b, sizeof(raw), raw);
+    uint8_t bnd[4] = {1,2,3,4};
+    int n = request_marshall(&b, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV4, bnd, 8080);
+
+    ck_assert_int_eq(10, n);
+    size_t avail;
+    uint8_t *out = buffer_read_ptr(&b, &avail);
+    // BND.PORT en big-endian: 8080 = 0x1F90
+    ck_assert_uint_eq(0x1F, out[8]);
+    ck_assert_uint_eq(0x90, out[9]);
+    ck_assert_uint_eq(0x01, out[4]);  // BND.ADDR
+    ck_assert_uint_eq(0x04, out[7]);
+}
+END_TEST
+
+START_TEST (test_marshall_ipv6_len) {
+    uint8_t raw[64];
+    buffer b;
+    buffer_init(&b, sizeof(raw), raw);
+    uint8_t bnd[16] = {0};
+    int n = request_marshall(&b, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV6, bnd, 0);
+
+    ck_assert_int_eq(22, n);  // 4 + 16 + 2
+}
+END_TEST
+
+START_TEST (test_marshall_no_space) {
+    uint8_t raw[6];  // no entran 10 bytes
+    buffer b;
+    buffer_init(&b, sizeof(raw), raw);
+    uint8_t bnd[4] = {0};
+    ck_assert_int_eq(-1, request_marshall(&b, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV4, bnd, 0));
+}
+END_TEST
+
+START_TEST (test_marshall_bad_atyp) {
+    uint8_t raw[32];
+    buffer b;
+    buffer_init(&b, sizeof(raw), raw);
+    uint8_t bnd[4] = {0};
+    // ATYP DOMAIN no es válido en el BND de la respuesta.
+    ck_assert_int_eq(-1, request_marshall(&b, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_DOMAIN, bnd, 0));
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s   = suite_create("request_parser");
@@ -264,6 +328,11 @@ suite(void) {
     tcase_add_test(tc, test_addr_to_string_fqdn);
     tcase_add_test(tc, test_addr_to_string_ipv6_pending);
     tcase_add_test(tc, test_addr_to_string_no_space);
+    tcase_add_test(tc, test_marshall_success_ipv4);
+    tcase_add_test(tc, test_marshall_port_network_order);
+    tcase_add_test(tc, test_marshall_ipv6_len);
+    tcase_add_test(tc, test_marshall_no_space);
+    tcase_add_test(tc, test_marshall_bad_atyp);
     suite_add_tcase(s, tc);
 
     return s;
