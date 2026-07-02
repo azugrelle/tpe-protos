@@ -1,12 +1,12 @@
 /**
- * hello.c -- parser del mensaje HELLO de SOCKSv5 (RFC 1928 §3).
+ * hello_parser.c -- parser del mensaje HELLO de SOCKSv5 (RFC 1928 §3).
  *
- * Ver hello.h para la descripción del formato y del contrato.
+ * Ver hello_parser.h para la descripción del formato y del contrato.
  */
 #include <stdio.h>
 #include <stdlib.h>  // abort
 
-#include "hello.h"
+#include "hello_parser.h"
 
 void
 hello_parser_init(struct hello_parser *p) {

@@ -7,7 +7,7 @@
 #include "buffer.h"
 
 /*
- * hello.c / hello.h -- parser del mensaje HELLO de SOCKSv5 (RFC 1928 §3).
+ * hello_parser.c / hello_parser.h -- parser del mensaje HELLO de SOCKSv5 (RFC 1928 §3). No sabe nada de sockets ni de la stm.
  *
  * El saludo del cliente tiene la forma:
  *

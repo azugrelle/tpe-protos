@@ -23,8 +23,8 @@
 #include "buffer.h"
 #include "stm.h"
 
-#include "hello.h"
-#include "request.h"
+#include "hello_parser.h"
+#include "request_parser.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
 
@@ -84,7 +84,7 @@ struct hello_st {
     uint8_t               method;
 };
 
-/* `struct request_st' (usado por REQUEST_READ) se declara en request.h */
+/* `struct request_st' (usado por REQUEST_READ) se declara en request_parser.h */
 
 /** usado por el estado de conexión al origin server (M3, T40) */
 struct connecting {

@@ -1,5 +1,5 @@
 /**
- * state_hello.c -- estados HELLO_READ / HELLO_WRITE del proxy SOCKSv5.
+ * state_hello.c -- handler de estados HELLO_READ / HELLO_WRITE del proxy SOCKSv5.
  */
 #include <stdint.h>
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
