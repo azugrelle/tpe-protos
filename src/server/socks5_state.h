@@ -24,6 +24,7 @@
 #include "stm.h"
 
 #include "hello_parser.h"
+#include "auth_parser.h"
 #include "request_parser.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
@@ -57,7 +58,36 @@ enum socks_v5state {
     HELLO_WRITE,
 
     /**
-     * recibe y parsea el pedido `request' del cliente (RFC 1928 §4).
+     * recibe el subnegotiation usuario/contraseña del cliente (RFC 1929 §2)
+     * y lo valida contra la tabla de usuarios cargada por -u.
+     *
+     * Intereses:
+     *     - OP_READ sobre client_fd
+     *
+     * Transiciones:
+     *   - AUTH_READ  mientras el mensaje no esté completo
+     *   - AUTH_WRITE cuando está completo
+     *   - ERROR      ante cualquier error (IO/parseo)
+     */
+    AUTH_READ,
+
+    /**
+     * envía la respuesta del subnegotiation (VER|STATUS) al cliente.
+     *
+     * Intereses:
+     *     - OP_WRITE sobre client_fd
+     *
+     * Transiciones:
+     *   - AUTH_WRITE   mientras queden bytes por enviar
+     *   - REQUEST_READ cuando el STATUS fue éxito (0x00)
+     *   - DONE         cuando el STATUS fue falla (RFC 1929 exige cerrar
+     *                  la conexión ante autenticación fallida)
+     *   - ERROR        ante cualquier error (IO)
+     */
+    AUTH_WRITE,
+
+    /**
+     * recibe el pedido `request' del cliente.
      *
      * Intereses:
      *     - OP_READ sobre client_fd
@@ -97,6 +127,15 @@ struct hello_st {
     struct hello_parser   parser;
     /** el método de autenticación seleccionado */
     uint8_t               method;
+};
+
+/** usado por AUTH_READ, AUTH_WRITE */
+struct auth_st {
+    /** buffer utilizado para I/O (los mismos del `struct socks5') */
+    buffer              *rb, *wb;
+    struct auth_parser   parser;
+    /** resultado de check_if_valid_credentials: 0x00 éxito, 0x01 falla */
+    uint8_t              status;
 };
 
 /* `struct request_st' (usado por REQUEST_READ) se declara en request_parser.h */
@@ -149,6 +188,7 @@ struct socks5 {
     /** estados para el client_fd */
     union {
         struct hello_st           hello;
+        struct auth_st            auth;
         struct request_st         request;
         struct copy               copy;
     } client;

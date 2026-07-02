@@ -16,6 +16,7 @@
 #include "socks5_state.h"
 
 #include "states/include/state_hello.h"
+#include "states/include/state_auth.h"
 #include "states/include/state_request.h"
 
 /** cantidad máxima de estructuras `socks5' guardadas en el pool de reuso */
@@ -164,6 +165,16 @@ static const struct state_definition client_statbl[] = {
     {
         .state            = HELLO_WRITE,
         .on_write_ready   = hello_write,
+    },
+    {
+        .state            = AUTH_READ,
+        .on_arrival       = auth_read_init,
+        .on_departure     = auth_read_close,
+        .on_read_ready    = auth_read,
+    },
+    {
+        .state            = AUTH_WRITE,
+        .on_write_ready   = auth_write,
     },
     {
         .state            = REQUEST_READ,

@@ -5,15 +5,20 @@
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_hello.h"
-#include "include/state_request.h"   // REQUEST_READ es el próximo estado
+#include "include/state_auth.h"      // AUTH_READ es el próximo estado si se autentica
+#include "include/state_request.h"   // REQUEST_READ es el próximo estado si no
 
 /** callback del parser utilizado en `hello_read' */
 static void
 on_hello_method(struct hello_parser *p, const uint8_t method) {
     uint8_t *selected  = p->data;
 
-    if(SOCKS_HELLO_NOAUTHENTICATION_REQUIRED == method) {
-       *selected = method;
+    if(SOCKS_HELLO_USERNAME_PASSWORD == method) {
+        // siempre preferido si el cliente lo ofrece, sin importar el orden.
+        *selected = method;
+    } else if(SOCKS_HELLO_NOAUTHENTICATION_REQUIRED == method
+              && *selected != SOCKS_HELLO_USERNAME_PASSWORD) {
+        *selected = method;
     }
 }
 
@@ -35,9 +40,9 @@ static unsigned
 hello_process(const struct hello_st* d) {
     unsigned ret = HELLO_WRITE;
 
-    const uint8_t m = d->method;
-    const uint8_t r = (m == SOCKS_HELLO_NO_ACCEPTABLE_METHODS) ? 0xFF : 0x00;
-    if (-1 == hello_marshall(d->wb, r)) {
+    // el METHOD de la respuesta es el método elegido tal cual (0x00, 0x02 o
+    // 0xFF si ninguno fue aceptable); ver RFC 1928 §3.
+    if (-1 == hello_marshall(d->wb, d->method)) {
         ret = ERROR;
     }
     // Si el método es "no aceptable" igual pasamos por HELLO_WRITE para
@@ -102,6 +107,10 @@ hello_write(struct selector_key *key) {
             if(SOCKS_HELLO_NO_ACCEPTABLE_METHODS == d->method) {
                 // ya enviamos 0xFF: cerramos la conexión (RFC 1928 §3).
                 ret = DONE;
+            } else if(SOCKS_HELLO_USERNAME_PASSWORD == d->method) {
+                // el cliente eligió autenticarse: sigue el subnegotiation.
+                ret = (SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ))
+                          ? AUTH_READ : ERROR;
             } else if(SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ)) {
                 ret = REQUEST_READ;
             } else {

@@ -22,8 +22,9 @@
  * vuelve a alimentar cuando llegan más datos.
  */
 
-/** métodos de autenticación relevantes para M1 (RFC 1928 §3) */
+/** métodos de autenticación soportados (RFC 1928 §3) */
 static const uint8_t SOCKS_HELLO_NOAUTHENTICATION_REQUIRED = 0x00;
+static const uint8_t SOCKS_HELLO_USERNAME_PASSWORD         = 0x02;
 static const uint8_t SOCKS_HELLO_NO_ACCEPTABLE_METHODS     = 0xFF;
 
 /** estados del parser del HELLO */
