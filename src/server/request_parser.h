@@ -86,6 +86,8 @@ enum request_state {
     request_error_unsupported_version,
     request_error_unsupported_cmd,
     request_error_unsupported_atyp,
+    /** pedido malformado (p.ej. FQDN de longitud 0); reply REP general failure */
+    request_error_invalid,
 };
 
 /**

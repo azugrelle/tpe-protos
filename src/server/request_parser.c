@@ -69,10 +69,8 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             p->remaining     = b;
             p->dst_addr_read = 0;
             if(p->remaining == 0) {
-                // FQDN vacío: no hay nombre, se pasa directo al puerto.
-                p->dst_addr_len = 0;
-                p->remaining    = SOCKS5_PORT_LEN;
-                p->state        = request_dstport;
+                // un FQDN vacío no es resoluble: se rechaza el pedido.
+                p->state = request_error_invalid;
             } else {
                 p->state = request_dstaddr;
             }
@@ -96,6 +94,7 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
         case request_error_unsupported_version:
         case request_error_unsupported_cmd:
         case request_error_unsupported_atyp:
+        case request_error_invalid:
             // estados terminales: no consumen más bytes.
             break;
 
@@ -114,6 +113,7 @@ request_is_done(const enum request_state state, bool *errored) {
         case request_error_unsupported_version:
         case request_error_unsupported_cmd:
         case request_error_unsupported_atyp:
+        case request_error_invalid:
             if(errored != NULL) {
                 *errored = true;
             }
