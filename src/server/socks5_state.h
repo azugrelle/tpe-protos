@@ -63,12 +63,24 @@ enum socks_v5state {
      *     - OP_READ sobre client_fd
      *
      * Transiciones:
-     *   - REQUEST_READ mientras el mensaje no esté completo
-     *   - DONE         cuando se parseó el pedido (todavía no se responde ni se
-     *                  conecta al origen)
-     *   - ERROR        ante error de IO o pedido inválido / no soportado
+     *   - REQUEST_READ  mientras el mensaje no esté completo
+     *   - REQUEST_WRITE cuando se parseó el pedido (para responder el reply)
+     *   - ERROR         ante error de IO
      */
     REQUEST_READ,
+
+    /**
+     * envía el reply del `request' al cliente (RFC 1928 §6).
+     *
+     * Intereses:
+     *     - OP_WRITE sobre client_fd
+     *
+     * Transiciones:
+     *   - REQUEST_WRITE mientras queden bytes por enviar
+     *   - DONE          cuando se envió el reply (todavía no se conecta al origen)
+     *   - ERROR         ante error de IO
+     */
+    REQUEST_WRITE,
 
     // estados terminales
     DONE,

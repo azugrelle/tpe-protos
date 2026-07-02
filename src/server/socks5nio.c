@@ -172,6 +172,10 @@ static const struct state_definition client_statbl[] = {
         .on_read_ready    = request_read,
     },
     {
+        .state            = REQUEST_WRITE,
+        .on_write_ready   = request_write,
+    },
+    {
         .state            = DONE,
     },
     {

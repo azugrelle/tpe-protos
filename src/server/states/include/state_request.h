@@ -14,6 +14,9 @@ void request_read_init(const unsigned state, struct selector_key *key);
 /** lee y parsea el pedido `request' del cliente */
 unsigned request_read(struct selector_key *key);
 
+/** envía el reply del `request' al cliente */
+unsigned request_write(struct selector_key *key);
+
 /** cierra el parser al abandonar el estado (on_departure) */
 void request_read_close(const unsigned state, struct selector_key *key);
 
