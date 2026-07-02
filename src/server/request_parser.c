@@ -33,7 +33,13 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_cmd:
-            // TODO: guardar CMD; solo CONNECT es soportado.
+            // solo CONNECT está soportado; el resto se rechaza con REP 0x07.
+            p->cmd = b;
+            if(SOCKS5_REQ_CMD_CONNECT == b) {
+                p->state = request_rsv;
+            } else {
+                p->state = request_error_unsupported_cmd;
+            }
             break;
 
         case request_rsv:
