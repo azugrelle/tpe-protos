@@ -1,6 +1,10 @@
 include ./Makefile.inc
 
-SERVER_SOURCES=$(wildcard src/server/*.c)
+# echoWithSelector.c es el echo standalone de M0 (tiene su propio main()): se
+# excluye del binario `server' para no chocar con src/server/main.c.
+SERVER_SOURCES=$(filter-out src/server/echoWithSelector.c, \
+               $(wildcard src/server/*.c) $(wildcard src/server/states/*.c) \
+               $(wildcard src/server/utils/*.c))
 CLIENT_SOURCES=$(wildcard src/client/*.c)
 SHARED_SOURCES=$(wildcard src/shared/*.c)
 
@@ -27,9 +31,7 @@ $(CLIENT_OUTPUT_FILE): $(CLIENT_OBJECTS) $(SHARED_OBJECTS)
 	$(COMPILER) $(COMPILER_FLAGS) $(LD_FLAGS) $(CLIENT_OBJECTS) $(SHARED_OBJECTS) -o $(CLIENT_OUTPUT_FILE)
 
 obj/%.o: src/%.c
-	mkdir -p $(OBJECTS_FOLDER)/server
-	mkdir -p $(OBJECTS_FOLDER)/client
-	mkdir -p $(OBJECTS_FOLDER)/shared
+	mkdir -p $(dir $@)
 	$(COMPILER) $(COMPILER_FLAGS) -c $< -o $@
 
 clean:
