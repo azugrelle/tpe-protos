@@ -21,7 +21,6 @@ request_parser_init(struct request_parser *p) {
 
 enum request_state
 request_parser_feed(struct request_parser *p, const uint8_t b) {
-    (void) b;  // los estados de parseo todavía no consumen `b'.
     switch(p->state) {
         case request_version:
             // VER debe ser 0x05; si no, se rechaza el pedido.
@@ -43,7 +42,8 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_rsv:
-            // TODO: RSV se lee y se ignora.
+             // RSV es reservado: se lee y se ignora su valor.
+            p->state = request_atyp;
             break;
 
         case request_atyp:
