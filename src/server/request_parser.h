@@ -41,6 +41,11 @@ static const uint8_t SOCKS5_ATYP_IPV4   = 0x01;
 static const uint8_t SOCKS5_ATYP_DOMAIN = 0x03;
 static const uint8_t SOCKS5_ATYP_IPV6   = 0x04;
 
+/** longitud fija de DST.ADDR según ATYP, y de DST.PORT (RFC 1928 §4) */
+static const uint8_t SOCKS5_IPV4_ADDR_LEN = 4;
+static const uint8_t SOCKS5_IPV6_ADDR_LEN = 16;
+static const uint8_t SOCKS5_PORT_LEN      = 2;
+
 /*
  * Códigos de respuesta (REP) del reply, RFC 1928 §6. Por ahora solo se usan
  * SUCCEEDED (éxito temporal para inspección), CMD_NOT_SUPPORTED y

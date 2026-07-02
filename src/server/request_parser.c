@@ -51,10 +51,10 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             p->atyp          = b;
             p->dst_addr_read = 0;
             if(SOCKS5_ATYP_IPV4 == b) {
-                p->remaining = 4;
+                p->remaining = SOCKS5_IPV4_ADDR_LEN;
                 p->state     = request_dstaddr;
             } else if(SOCKS5_ATYP_IPV6 == b) {
-                p->remaining = 16;
+                p->remaining = SOCKS5_IPV6_ADDR_LEN;
                 p->state     = request_dstaddr;
             } else if(SOCKS5_ATYP_DOMAIN == b) {
                 // falta leer el byte de longitud antes del nombre.
