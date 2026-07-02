@@ -167,6 +167,8 @@ static const struct state_definition client_statbl[] = {
     },
     {
         .state            = REQUEST_READ,
+        .on_arrival       = request_read_init,
+        .on_departure     = request_read_close,
         .on_read_ready    = request_read,
     },
     {

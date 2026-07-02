@@ -3,14 +3,18 @@
 
 /*
  * state_request.h -- handler del estado REQUEST_READ (RFC 1928 §4).
- *
- * Stub para M1: cierra la conexión. El parseo real del REQUEST llega en T21.
  */
 
 #include "socks5_state.h"
 #include "selector.h"
 
-/** lee el pedido `request' del cliente (stub M1: cierra la conexión) */
+/** inicializa el estado REQUEST_READ (on_arrival) */
+void request_read_init(const unsigned state, struct selector_key *key);
+
+/** lee y parsea el pedido `request' del cliente */
 unsigned request_read(struct selector_key *key);
+
+/** cierra el parser al abandonar el estado (on_departure) */
+void request_read_close(const unsigned state, struct selector_key *key);
 
 #endif

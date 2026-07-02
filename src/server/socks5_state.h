@@ -57,13 +57,16 @@ enum socks_v5state {
     HELLO_WRITE,
 
     /**
-     * recibe el pedido `request' del cliente.
+     * recibe y parsea el pedido `request' del cliente (RFC 1928 §4).
      *
      * Intereses:
      *     - OP_READ sobre client_fd
      *
-     * Para M1 es un estado *stub*: cierra la conexión. El parseo real del
-     * REQUEST se implementa en T21.
+     * Transiciones:
+     *   - REQUEST_READ mientras el mensaje no esté completo
+     *   - DONE         cuando se parseó el pedido (todavía no se responde ni se
+     *                  conecta al origen)
+     *   - ERROR        ante error de IO o pedido inválido / no soportado
      */
     REQUEST_READ,
 
@@ -86,12 +89,12 @@ struct hello_st {
 
 /* `struct request_st' (usado por REQUEST_READ) se declara en request_parser.h */
 
-/** usado por el estado de conexión al origin server (M3, T40) */
+/** usado por el estado de conexión al origin server */
 struct connecting {
     int placeholder;
 };
 
-/** usado por COPY / relay bidireccional (M3, T41) */
+/** usado por COPY / relay bidireccional */
 struct copy {
     int placeholder;
 };
@@ -110,9 +113,20 @@ struct socks5 {
     socklen_t                     client_addr_len;
     int                           client_fd;
 
-    /** resolución del origin server (DNS async, M3); se libera al destruir */
+    /**
+     * destino pedido en el REQUEST (RFC 1928 §4), parseado en REQUEST_READ.
+     * Lo consume la resolución/conexión al origen.
+     *   - dest_atyp: ATYP del pedido (IPv4 / FQDN / IPv6).
+     *   - dest_host: DST.ADDR ya reconstruido a texto (IPv4 dotted o FQDN).
+     *   - dest_port: DST.PORT en host byte order.
+     */
+    uint8_t                       dest_atyp;
+    char                          dest_host[SOCKS5_FQDN_MAX_LEN];
+    uint16_t                      dest_port;
+
+    /** resolución del origin server (DNS async); se libera al destruir */
     struct addrinfo              *origin_resolution;
-    /** información de la conexión con el origin server (M3) */
+    /** información de la conexión con el origin server */
     struct sockaddr_storage       origin_addr;
     socklen_t                     origin_addr_len;
     int                           origin_fd;
