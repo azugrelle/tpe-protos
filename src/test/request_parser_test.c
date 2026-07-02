@@ -135,6 +135,55 @@ START_TEST (test_request_empty_fqdn) {
 }
 END_TEST
 
+START_TEST (test_request_ipv4_full) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    // 1.2.3.4 : 8080  (0x1F90)
+    uint8_t msg[] = {0x05,0x01,0x00,0x01, 0x01,0x02,0x03,0x04, 0x1F,0x90};
+    enum request_state st = feed_all(&p, msg, N(msg), &err);
+
+    ck_assert_int_eq(false, err);
+    ck_assert_int_eq(request_done, st);
+    ck_assert_uint_eq(0, p.remaining);
+    ck_assert_uint_eq(8080, p.dst_port);
+}
+END_TEST
+
+START_TEST (test_request_fqdn_full) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *host = "example.com";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(host)};
+    memcpy(msg + 5, host, strlen(host));
+    size_t off = 5 + strlen(host);
+    msg[off] = 0x00; msg[off+1] = 0x50;  // puerto 80
+    enum request_state st = feed_all(&p, msg, off + 2, &err);
+
+    ck_assert_int_eq(false, err);
+    ck_assert_int_eq(request_done, st);
+    ck_assert_uint_eq(80, p.dst_port);
+    ck_assert_int_eq(0, memcmp(p.dst_addr, host, strlen(host)));
+}
+END_TEST
+
+START_TEST (test_request_port_fragmented) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    // el puerto llega partido entre dos "recv"
+    uint8_t a[] = {0x05,0x01,0x00,0x01, 0x7F,0x00,0x00,0x01, 0x1F};
+    uint8_t b[] = {0x90};
+    ck_assert_int_eq(request_dstport, feed_all(&p, a, N(a), &err));
+    enum request_state st = feed_all(&p, b, N(b), &err);
+
+    ck_assert_int_eq(false, err);
+    ck_assert_int_eq(request_done, st);
+    ck_assert_uint_eq(8080, p.dst_port);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s   = suite_create("request_parser");
@@ -148,6 +197,9 @@ suite(void) {
     tcase_add_test(tc, test_request_unsupported_atyp);
     tcase_add_test(tc, test_request_fragmented);
     tcase_add_test(tc, test_request_empty_fqdn);
+    tcase_add_test(tc, test_request_ipv4_full);
+    tcase_add_test(tc, test_request_fqdn_full);
+    tcase_add_test(tc, test_request_port_fragmented);
     suite_add_tcase(s, tc);
 
     return s;

@@ -87,7 +87,11 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_dstport:
-            // TODO: acumular los 2 octetos de DST.PORT (big-endian).
+            // DST.PORT viene en big-endian: primero el byte alto, luego el bajo.
+            p->dst_port = (uint16_t)((p->dst_port << 8) | b);
+            if(--p->remaining == 0) {
+                p->state = request_done;
+            }
             break;
 
         case request_done:
