@@ -65,11 +65,27 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_dstaddr_fqdn_len:
-            // TODO: byte de longitud N del FQDN.
+            // byte de longitud: cuántos octetos de nombre siguen.
+            p->remaining     = b;
+            p->dst_addr_read = 0;
+            if(p->remaining == 0) {
+                // FQDN vacío: no hay nombre, se pasa directo al puerto.
+                p->dst_addr_len = 0;
+                p->remaining    = SOCKS5_PORT_LEN;
+                p->state        = request_dstport;
+            } else {
+                p->state = request_dstaddr;
+            }
             break;
 
         case request_dstaddr:
-            // TODO: acumular los N octetos de DST.ADDR.
+            // se acumulan los octetos de DST.ADDR hasta completar el largo.
+            p->dst_addr[p->dst_addr_read++] = b;
+            if(--p->remaining == 0) {
+                p->dst_addr_len = p->dst_addr_read;
+                p->remaining    = SOCKS5_PORT_LEN;
+                p->state        = request_dstport;
+            }
             break;
 
         case request_dstport:
