@@ -1,0 +1,107 @@
+/**
+ * request_parser.c -- parser del mensaje REQUEST de SOCKSv5 (RFC 1928 §4).
+ *
+ * Ver request_parser.h para la descripción del formato y del contrato.
+ */
+#include <stdio.h>
+#include <stdlib.h>  // abort
+
+#include "request_parser.h"
+
+void
+request_parser_init(struct request_parser *p) {
+    p->state         = request_version;
+    p->remaining     = 0;
+    p->cmd           = 0;
+    p->atyp          = 0;
+    p->dst_addr_len  = 0;
+    p->dst_addr_read = 0;
+    p->dst_port      = 0;
+}
+
+enum request_state
+request_parser_feed(struct request_parser *p, const uint8_t b) {
+    (void) b;  // los estados de parseo todavía no consumen `b'.
+    switch(p->state) {
+        case request_version:
+            // TODO: VER debe ser 0x05.
+            break;
+
+        case request_cmd:
+            // TODO: guardar CMD; solo CONNECT es soportado.
+            break;
+
+        case request_rsv:
+            // TODO: RSV se lee y se ignora.
+            break;
+
+        case request_atyp:
+            // TODO: guardar ATYP y ramificar el largo de DST.ADDR.
+            break;
+
+        case request_dstaddr_fqdn_len:
+            // TODO: byte de longitud N del FQDN.
+            break;
+
+        case request_dstaddr:
+            // TODO: acumular los N octetos de DST.ADDR.
+            break;
+
+        case request_dstport:
+            // TODO: acumular los 2 octetos de DST.PORT (big-endian).
+            break;
+
+        case request_done:
+        case request_error_unsupported_version:
+        case request_error_unsupported_cmd:
+        case request_error_unsupported_atyp:
+            // estados terminales: no consumen más bytes.
+            break;
+
+        default:
+            fprintf(stderr, "request_parser_feed: estado desconocido %d\n",
+                    p->state);
+            abort();
+    }
+    return p->state;
+}
+
+bool
+request_is_done(const enum request_state state, bool *errored) {
+    bool ret;
+    switch(state) {
+        case request_error_unsupported_version:
+        case request_error_unsupported_cmd:
+        case request_error_unsupported_atyp:
+            if(errored != NULL) {
+                *errored = true;
+            }
+            ret = true;
+            break;
+        case request_done:
+            ret = true;
+            break;
+        default:
+            ret = false;
+            break;
+    }
+    return ret;
+}
+
+enum request_state
+request_consume(buffer *b, struct request_parser *p, bool *errored) {
+    enum request_state st = p->state;
+    while(buffer_can_read(b)) {
+        const uint8_t c = buffer_read(b);
+        st = request_parser_feed(p, c);
+        if(request_is_done(st, errored)) {
+            break;
+        }
+    }
+    return st;
+}
+
+void
+request_parser_close(struct request_parser *p) {
+    // nada que liberar por ahora.
+}
