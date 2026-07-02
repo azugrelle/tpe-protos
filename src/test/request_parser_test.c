@@ -184,6 +184,66 @@ START_TEST (test_request_port_fragmented) {
 }
 END_TEST
 
+START_TEST (test_addr_to_string_ipv4) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    uint8_t msg[] = {0x05,0x01,0x00,0x01, 0x01,0x02,0x03,0x04, 0x00,0x50};
+    feed_all(&p, msg, N(msg), &err);
+
+    char host[64];
+    ck_assert_int_eq(0, request_addr_to_string(&p, host, sizeof(host)));
+    ck_assert_str_eq("1.2.3.4", host);
+}
+END_TEST
+
+START_TEST (test_addr_to_string_fqdn) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *h = "example.com";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(h)};
+    memcpy(msg + 5, h, strlen(h));
+    size_t off = 5 + strlen(h);
+    msg[off] = 0x00; msg[off+1] = 0x50;
+    feed_all(&p, msg, off + 2, &err);
+
+    char host[64];
+    ck_assert_int_eq(0, request_addr_to_string(&p, host, sizeof(host)));
+    ck_assert_str_eq("example.com", host);
+}
+END_TEST
+
+START_TEST (test_addr_to_string_ipv6_pending) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    uint8_t msg[4 + 16 + 2] = {0x05,0x01,0x00,0x04};
+    msg[4 + 15] = 0x01;  // ::1
+    feed_all(&p, msg, N(msg), &err);
+
+    char host[64];
+    // IPv6 todavía no se reconstruye en M1 (T52).
+    ck_assert_int_eq(-1, request_addr_to_string(&p, host, sizeof(host)));
+}
+END_TEST
+
+START_TEST (test_addr_to_string_no_space) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *h = "example.com";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(h)};
+    memcpy(msg + 5, h, strlen(h));
+    size_t off = 5 + strlen(h);
+    msg[off] = 0x00; msg[off+1] = 0x50;
+    feed_all(&p, msg, off + 2, &err);
+
+    char host[4];  // no entra "example.com" + NUL
+    ck_assert_int_eq(-1, request_addr_to_string(&p, host, sizeof(host)));
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s   = suite_create("request_parser");
@@ -200,6 +260,10 @@ suite(void) {
     tcase_add_test(tc, test_request_ipv4_full);
     tcase_add_test(tc, test_request_fqdn_full);
     tcase_add_test(tc, test_request_port_fragmented);
+    tcase_add_test(tc, test_addr_to_string_ipv4);
+    tcase_add_test(tc, test_addr_to_string_fqdn);
+    tcase_add_test(tc, test_addr_to_string_ipv6_pending);
+    tcase_add_test(tc, test_addr_to_string_no_space);
     suite_add_tcase(s, tc);
 
     return s;

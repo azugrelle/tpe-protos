@@ -161,6 +161,17 @@ void request_parser_close(struct request_parser *p);
 int request_marshall(buffer *b, const uint8_t rep, const uint8_t bnd_atyp,
                      const uint8_t *bnd_addr, const uint16_t bnd_port);
 
+/**
+ * reconstruye DST.ADDR ya parseado como string imprimible en `out' (de tamaño
+ * `outlen', NUL incluido), listo para loguear o resolver por DNS:
+ *   - IPv4 : notación dotted (p.ej. "1.2.3.4").
+ *   - FQDN : el nombre tal cual.
+ *   - IPv6 : todavía no se reconstruye en M1 (se completa en T52).
+ * Es solo formateo, no hace I/O. Retorna 0 si pudo, -1 si el ATYP no se puede
+ * representar todavía o si `out' no tiene espacio.
+ */
+int request_addr_to_string(const struct request_parser *p, char *out, size_t outlen);
+
 /*
  * `struct request_st' -- estado de la conexión durante REQUEST_READ/WRITE.
  * Vive en la `union' de estados de `struct socks5' (ver socks5_state.h).

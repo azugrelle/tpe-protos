@@ -5,6 +5,8 @@
  */
 #include <stdio.h>
 #include <stdlib.h>  // abort
+#include <string.h>  // memcpy
+#include <arpa/inet.h>  // inet_ntop
 
 #include "request_parser.h"
 
@@ -149,4 +151,22 @@ request_consume(buffer *b, struct request_parser *p, bool *errored) {
 void
 request_parser_close(struct request_parser *p) {
     // nada que liberar por ahora.
+}
+
+int
+request_addr_to_string(const struct request_parser *p, char *out, size_t outlen) {
+    if(SOCKS5_ATYP_IPV4 == p->atyp) {
+        return inet_ntop(AF_INET, p->dst_addr, out, (socklen_t)outlen) == NULL
+               ? -1 : 0;
+    }
+    if(SOCKS5_ATYP_DOMAIN == p->atyp) {
+        if((size_t)p->dst_addr_len + 1 > outlen) {  // +1 por el NUL
+            return -1;
+        }
+        memcpy(out, p->dst_addr, p->dst_addr_len);
+        out[p->dst_addr_len] = '\0';
+        return 0;
+    }
+    // IPv6 (u otro): reconstrucción pendiente para T52.
+    return -1;
 }
