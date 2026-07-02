@@ -42,12 +42,26 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_rsv:
-             // RSV es reservado: se lee y se ignora su valor.
+            // RSV es reservado: se lee y se ignora su valor.
             p->state = request_atyp;
             break;
 
         case request_atyp:
-            // TODO: guardar ATYP y ramificar el largo de DST.ADDR.
+            // el tipo de dirección define cuántos bytes mide DST.ADDR.
+            p->atyp          = b;
+            p->dst_addr_read = 0;
+            if(SOCKS5_ATYP_IPV4 == b) {
+                p->remaining = 4;
+                p->state     = request_dstaddr;
+            } else if(SOCKS5_ATYP_IPV6 == b) {
+                p->remaining = 16;
+                p->state     = request_dstaddr;
+            } else if(SOCKS5_ATYP_DOMAIN == b) {
+                // falta leer el byte de longitud antes del nombre.
+                p->state = request_dstaddr_fqdn_len;
+            } else {
+                p->state = request_error_unsupported_atyp;
+            }
             break;
 
         case request_dstaddr_fqdn_len:

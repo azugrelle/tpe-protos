@@ -42,9 +42,9 @@ static const uint8_t SOCKS5_ATYP_DOMAIN = 0x03;
 static const uint8_t SOCKS5_ATYP_IPV6   = 0x04;
 
 /*
- * Códigos de respuesta (REP) del reply, RFC 1928 §6. En M1 (T21) solo se usan
+ * Códigos de respuesta (REP) del reply, RFC 1928 §6. Por ahora solo se usan
  * SUCCEEDED (éxito temporal para inspección), CMD_NOT_SUPPORTED y
- * ATYP_NOT_SUPPORTED; el resto los usa el connect real en T40/T52.
+ * ATYP_NOT_SUPPORTED; el resto los vamos a usar mas adelante para reportar errores de conexión.
  */
 static const uint8_t SOCKS5_REP_SUCCEEDED           = 0x00;
 static const uint8_t SOCKS5_REP_GENERAL_FAILURE     = 0x01;
@@ -85,7 +85,7 @@ enum request_state {
 
 /**
  * salida del parser: el destino ya parseado (crudo). La reconstrucción a
- * string legible / sockaddr (para el connect de T40) la hace el handler del
+ * string legible / sockaddr (para el connect) la hace el handler del
  * estado a partir de `atyp` + `dst_addr`.
  */
 struct request_parser {
