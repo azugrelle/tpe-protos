@@ -87,10 +87,10 @@ suite(void) {
     Suite *s;
     TCase *tc;
 
-    s = suite_create("parser_utils");
+    s = suite_create("parser");
 
     /* Core test case */
-    tc = tcase_create("parser_utils");
+    tc = tcase_create("parser");
 
     tcase_add_test(tc, test_basic);
     suite_add_tcase(s, tc);
