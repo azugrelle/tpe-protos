@@ -112,6 +112,20 @@ enum socks_v5state {
      */
     REQUEST_WRITE,
 
+    /**
+     * espera a que termine el `connect' no bloqueante al origin server.
+     *
+     * Intereses:
+     *     - OP_WRITE sobre origin_fd (el connect terminó cuando queda escribible)
+     *     - OP_NOOP  sobre client_fd (todavía no hay REPLY ni relay)
+     *
+     * Transiciones:
+     *   - CONNECTING    mientras el connect siga en vuelo
+     *   - REQUEST_WRITE cuando se conoce el resultado (éxito o fallo) y hay REPLY
+     *   - ERROR         ante un error interno irrecuperable
+     */
+    CONNECTING,
+
     // estados terminales
     DONE,
     ERROR,
