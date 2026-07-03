@@ -143,7 +143,6 @@ static unsigned
 connect_try(struct selector_key *key) {
     struct socks5     *s = ATTACHMENT(key);
     struct connecting *d = &s->orig.conn;
-    bool had_connect_error = false;
 
     while(s->origin_resolution_current != NULL) {
         struct addrinfo *ai = s->origin_resolution_current;
@@ -151,7 +150,7 @@ connect_try(struct selector_key *key) {
         s->origin_fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if(s->origin_fd == -1) {
             const int e = errno;
-            if(!had_connect_error) {
+            if(!d->had_connect_error) {
                 d->last_error = e;
             }
             connect_close_origin(s, key->s, false);
@@ -161,7 +160,7 @@ connect_try(struct selector_key *key) {
 
         if(selector_fd_set_nio(s->origin_fd) == -1) {
             const int e = errno;
-            if(!had_connect_error) {
+            if(!d->had_connect_error) {
                 d->last_error = e;
             }
             connect_close_origin(s, key->s, false);
@@ -196,8 +195,8 @@ connect_try(struct selector_key *key) {
         }
 
         // connect falló de inmediato: es un verdicto de red y tiene precedencia.
-        d->last_error     = connect_errno;
-        had_connect_error = true;
+        d->last_error         = connect_errno;
+        d->had_connect_error  = true;
         connect_close_origin(s, key->s, false);
         s->origin_resolution_current = ai->ai_next;
     }
@@ -212,7 +211,8 @@ connect_start(struct selector_key *key) {
     struct socks5     *s = ATTACHMENT(key);
     struct connecting *d = &s->orig.conn;
 
-    d->last_error = 0;
+    d->last_error        = 0;
+    d->had_connect_error = false;
     const int gai = connect_resolve(s);
     if(gai != 0) {
         return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
@@ -282,8 +282,10 @@ connecting(struct selector_key *key) {
         return REQUEST_WRITE;
     }
 
-    // fallo de red en este candidato: probamos el siguiente.
-    d->last_error = err;
+    // fallo de red en este candidato: verdicto de red (precedencia), probamos
+    // el siguiente.
+    d->last_error        = err;
+    d->had_connect_error = true;
     struct addrinfo *next = (s->origin_resolution_current != NULL)
                                 ? s->origin_resolution_current->ai_next
                                 : NULL;

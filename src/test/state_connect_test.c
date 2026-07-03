@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <check.h>
@@ -11,7 +12,10 @@
 
 //////////////////////////////////////////////////////////////////////
 // Stubs de los símbolos externos que referencia state_connect.c, para que el
-// binario linkee sin selector.c / state_request.c. connect_resolve no los usa.
+// binario linkee sin selector.c / state_request.c.
+
+/** cuántas veces se registró un fd (para asertar el balance de references) */
+static int g_register_calls = 0;
 
 int
 request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
@@ -30,7 +34,27 @@ selector_status
 selector_register(fd_selector s, const int fd, const fd_handler *handler,
                   const fd_interest interest, void *data) {
     (void)s; (void)fd; (void)handler; (void)interest; (void)data;
+    g_register_calls++;
     return SELECTOR_SUCCESS;
+}
+
+// connect() se intercepta con --wrap: por defecto delega en el real; cuando el
+// test enciende g_inject, scriptea el resultado por número de llamada.
+extern int __real_connect(int fd, const struct sockaddr *addr, socklen_t len);
+static bool g_inject       = false;
+static int  g_connect_calls = 0;
+
+int
+__wrap_connect(int fd, const struct sockaddr *addr, socklen_t len) {
+    if(!g_inject) {
+        return __real_connect(fd, addr, len);
+    }
+    g_connect_calls++;
+    if(g_connect_calls == 1) {
+        errno = ECONNREFUSED;   // 1er candidato: connect inmediato falla
+        return -1;
+    }
+    return 0;                   // 2do candidato: connect inmediato exitoso
 }
 
 selector_status
@@ -141,6 +165,60 @@ START_TEST (test_bnd_degrades_on_bad_fd) {
 }
 END_TEST
 
+/* nodo de addrinfo con su sockaddr_in para armar una lista a mano */
+static void
+init_ai(struct addrinfo *ai, struct sockaddr_in *sin, const char *ip,
+        uint16_t port, struct addrinfo *next) {
+    memset(sin, 0, sizeof(*sin));
+    sin->sin_family      = AF_INET;
+    sin->sin_addr.s_addr = inet_addr(ip);
+    sin->sin_port        = htons(port);
+    memset(ai, 0, sizeof(*ai));
+    ai->ai_family   = AF_INET;
+    ai->ai_socktype = SOCK_STREAM;
+    ai->ai_protocol = IPPROTO_TCP;
+    ai->ai_addr     = (struct sockaddr *)sin;
+    ai->ai_addrlen  = sizeof(*sin);
+    ai->ai_next     = next;
+}
+
+START_TEST (test_connect_retry_second_candidate) {
+    // dos candidatos: el 1º rechaza (connect inmediato falla), el 2º conecta.
+    struct sockaddr_in a0, a1;
+    struct addrinfo    n0, n1;
+    init_ai(&n1, &a1, "127.0.0.2", 2222, NULL);
+    init_ai(&n0, &a0, "127.0.0.1", 1111, &n1);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = -1;
+    s.references                = 1;
+    s.origin_resolution         = &n0;   // a mano: no se libera (no es getaddrinfo)
+    s.origin_resolution_current = &n0;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    g_inject = true; g_connect_calls = 0; g_register_calls = 0;
+    unsigned st = connect_try(&key);
+    g_inject = false;
+
+    ck_assert_uint_eq(CONNECTING, st);
+    ck_assert_uint_eq(2, s.references);                  // client_fd + origin_fd
+    ck_assert_int_eq(1, g_register_calls);               // origin registrado una vez
+    ck_assert_ptr_eq(&n1, s.origin_resolution_current);  // cursor avanzó exactamente uno
+    ck_assert_int_ne(-1, s.origin_fd);
+
+    // origin_addr se copió una sola vez: la del candidato activo (127.0.0.2:2222)
+    struct sockaddr_in *copied = (struct sockaddr_in *)&s.origin_addr;
+    ck_assert_uint_eq(inet_addr("127.0.0.2"), copied->sin_addr.s_addr);
+    ck_assert_uint_eq(htons(2222), copied->sin_port);
+    ck_assert_uint_eq(sizeof(a1), s.origin_addr_len);
+
+    close(s.origin_fd);   // el fd real del 2º candidato quedó abierto
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_connect");
@@ -150,6 +228,7 @@ suite(void) {
     tcase_add_test(tc, test_resolve_numerichost_rejects_fqdn);
     tcase_add_test(tc, test_bnd_from_bound_socket);
     tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
+    tcase_add_test(tc, test_connect_retry_second_candidate);
     suite_add_tcase(s, tc);
 
     return s;

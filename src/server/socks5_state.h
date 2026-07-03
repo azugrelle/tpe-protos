@@ -16,6 +16,7 @@
  * `states/include/state_*.h'.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/socket.h>   // sockaddr_storage
 #include <netdb.h>        // addrinfo
@@ -162,6 +163,12 @@ struct connecting {
     uint8_t  reply;
     /** errno del último candidato fallido, preservado para traducirlo a REP */
     int      last_error;
+    /**
+     * true si `last_error' proviene de un fallo de connect() (verdicto de red).
+     * Tiene precedencia sobre los fallos de socket()/nio (recurso local) al
+     * elegir el REP, y persiste entre reintentos de distintos candidatos.
+     */
+    bool     had_connect_error;
 };
 
 /** usado por COPY / relay bidireccional */

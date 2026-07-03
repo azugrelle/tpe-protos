@@ -82,10 +82,11 @@ $(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/re
 	$(COMPILER) $(COMPILER_FLAGS) src/test/request_parser_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
 # state_connect_test incluye state_connect.c inline y NO linkea selector.c: el
-# harness satisface con stubs propios los símbolos externos del módulo.
+# harness satisface con stubs propios los símbolos externos del módulo. Se
+# intercepta connect() con --wrap para poder scriptear el reintento de candidatos.
 $(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/states/state_connect.c
 	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILER_FLAGS) src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=connect src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)
