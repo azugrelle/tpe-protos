@@ -219,6 +219,28 @@ START_TEST (test_connect_retry_second_candidate) {
 }
 END_TEST
 
+START_TEST (test_errno_to_rep) {
+    ck_assert_uint_eq(SOCKS5_REP_CONN_REFUSED,        errno_to_rep(ECONNREFUSED));
+    ck_assert_uint_eq(SOCKS5_REP_NETWORK_UNREACHABLE, errno_to_rep(ENETUNREACH));
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE,    errno_to_rep(EHOSTUNREACH));
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE,    errno_to_rep(ETIMEDOUT));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE,     errno_to_rep(EACCES));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE,     errno_to_rep(0));
+    // no se usa 0x06 (TTL expired) para un timeout de connect
+    ck_assert_uint_ne(SOCKS5_REP_TTL_EXPIRED,         errno_to_rep(ETIMEDOUT));
+}
+END_TEST
+
+START_TEST (test_gai_error_to_rep) {
+    // el host que no resuelve → host unreachable
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, gai_error_to_rep(EAI_NONAME));
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, gai_error_to_rep(EAI_FAIL));
+    // fallos de recurso/internos → general failure
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE,  gai_error_to_rep(EAI_MEMORY));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE,  gai_error_to_rep(EAI_SYSTEM));
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_connect");
@@ -229,6 +251,8 @@ suite(void) {
     tcase_add_test(tc, test_bnd_from_bound_socket);
     tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
     tcase_add_test(tc, test_connect_retry_second_candidate);
+    tcase_add_test(tc, test_errno_to_rep);
+    tcase_add_test(tc, test_gai_error_to_rep);
     suite_add_tcase(s, tc);
 
     return s;

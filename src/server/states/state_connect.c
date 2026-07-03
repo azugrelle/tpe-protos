@@ -32,6 +32,35 @@
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
 
 /**
+ * traduce el errno de un fallo de connect() al código REP del reply
+ * (RFC 1928 §6). No se usa 0x06 (TTL expired) para un timeout de connect.
+ */
+static uint8_t
+errno_to_rep(int e) {
+    switch(e) {
+        case ECONNREFUSED: return SOCKS5_REP_CONN_REFUSED;         // 0x05
+        case ENETUNREACH:  return SOCKS5_REP_NETWORK_UNREACHABLE;  // 0x03
+        case EHOSTUNREACH: return SOCKS5_REP_HOST_UNREACHABLE;     // 0x04
+        case ETIMEDOUT:    return SOCKS5_REP_HOST_UNREACHABLE;     // 0x04
+        default:           return SOCKS5_REP_GENERAL_FAILURE;      // 0x01
+    }
+}
+
+/**
+ * traduce el código de retorno de getaddrinfo (EAI_*, no errno) al REP del
+ * reply. Los fallos de recurso/internos son general failure; el resto (el host
+ * no resuelve) se reporta como host unreachable.
+ */
+static uint8_t
+gai_error_to_rep(int gai) {
+    switch(gai) {
+        case EAI_MEMORY:
+        case EAI_SYSTEM: return SOCKS5_REP_GENERAL_FAILURE;   // 0x01
+        default:         return SOCKS5_REP_HOST_UNREACHABLE;  // 0x04
+    }
+}
+
+/**
  * resuelve el destino (dest_host:dest_port) a una lista de `addrinfo' lista
  * para `connect'. Síncrono por ahora: bloquea el loop un instante. Está aislada
  * a propósito para poder moverla a un hilo más adelante sin tocar el resto.
@@ -202,7 +231,7 @@ connect_try(struct selector_key *key) {
     }
 
     // candidatos agotados sin conectar.
-    return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
+    return connect_fail(s, key->s, errno_to_rep(d->last_error));
 }
 
 /** inicia la resolución + conexión no bloqueante al origen */
@@ -215,7 +244,7 @@ connect_start(struct selector_key *key) {
     d->had_connect_error = false;
     const int gai = connect_resolve(s);
     if(gai != 0) {
-        return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
+        return connect_fail(s, key->s, gai_error_to_rep(gai));
     }
     return connect_try(key);
 }
@@ -294,5 +323,5 @@ connecting(struct selector_key *key) {
     if(s->origin_resolution_current != NULL) {
         return connect_try(key);
     }
-    return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
+    return connect_fail(s, key->s, errno_to_rep(d->last_error));
 }
