@@ -59,3 +59,7 @@ uint8_t check_if_valid_credentials(const char * username, const char * password)
     }
 }
 
+
+int auth_is_required(void) {
+    return user_credentials != NULL;
+}

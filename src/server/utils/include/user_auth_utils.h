@@ -30,5 +30,9 @@ free_user_credentials(void);
 uint8_t
 check_if_valid_credentials(const char * username, const char * password);
 
+/** true si el servidor fue arrancado con al menos un usuario (-u): auth obligatoria */
+int
+auth_is_required(void);
+
 
 #endif

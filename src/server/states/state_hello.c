@@ -7,6 +7,7 @@
 #include "include/state_hello.h"
 #include "include/state_auth.h"      // AUTH_READ es el próximo estado si se autentica
 #include "include/state_request.h"   // REQUEST_READ es el próximo estado si no
+#include "utils/include/user_auth_utils.h" 
 
 /** callback del parser utilizado en `hello_read' */
 static void
@@ -17,7 +18,8 @@ on_hello_method(struct hello_parser *p, const uint8_t method) {
         // siempre preferido si el cliente lo ofrece, sin importar el orden.
         *selected = method;
     } else if(SOCKS_HELLO_NOAUTHENTICATION_REQUIRED == method
-              && *selected != SOCKS_HELLO_USERNAME_PASSWORD) {
+              && *selected != SOCKS_HELLO_USERNAME_PASSWORD
+            && !auth_is_required()) {
         *selected = method;
     }
 }
