@@ -7,18 +7,25 @@
  * en el camino válido, y cuando el connect termina se manda el REPLY real y se
  * pasa a REQUEST_WRITE.
  *
- * `connect_resolve' (síncrona, aislada) ya arma la lista de direcciones del
- * destino, pero `connect_start' todavía no la usa: responde un error temporal
- * mientras se implementa el connect no bloqueante.
+ * `connect_start' resuelve el destino y arranca un `connect' no bloqueante sobre
+ * el origin_fd, que se registra en el selector con interés OP_WRITE; el cliente
+ * queda en OP_NOOP hasta que haya REPLY. `connecting' se dispara cuando el origen
+ * queda escribible: consulta SO_ERROR y, según el resultado, responde éxito,
+ * prueba el siguiente candidato o responde el error.
  */
+#include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>        // snprintf
-#include <string.h>       // memset
+#include <string.h>       // memset, memcpy
+#include <unistd.h>       // close
 #include <netdb.h>        // getaddrinfo, AI_NUMERICHOST
+#include <sys/socket.h>   // socket, connect, getsockopt, SO_ERROR
 #include <netinet/in.h>   // IPPROTO_TCP
 
 #include "include/state_connect.h"
 #include "include/state_request.h"   // request_reply
 #include "request_parser.h"          // SOCKS5_ATYP_IPV4, SOCKS5_REP_*
+#include "socks5nio.h"               // socks5_handler_ref
 
 /** BND.ADDR de los replies mientras no hay BND real (0.0.0.0) */
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
@@ -62,29 +69,200 @@ connect_resolve(struct socks5 *s) {
     return 0;
 }
 
-/** inicia la resolución + conexión no bloqueante al origen */
-unsigned
-connect_start(struct selector_key *key) {
-    struct socks5 *s = ATTACHMENT(key);
+//////////////////////////////////////////////////////////////////////
+// Helpers de cleanup con una única invariante, para no repartir el manejo
+// del origin_fd / addrinfo / references entre los muchos caminos de error.
 
-    // Todavía no resolvemos ni abrimos sockets: por ahora un CONNECT recibe un
-    // REPLY de error temporal (sin hang ni abort) para cerrar el flujo.
-    (void)connect_resolve;
-    if(request_reply(s, SOCKS5_REP_GENERAL_FAILURE, SOCKS5_ATYP_IPV4,
-                     bnd_addr_none, 0) < 0) {
+/**
+ * cierra el origin_fd: si `registered' lo desregistra del selector (que es el
+ * único decremento de `references') y lo cierra; si no, solo lo cierra. No-op
+ * si ya vale -1. Deja siempre origin_fd en -1.
+ */
+static void
+connect_close_origin(struct socks5 *s, fd_selector sel, bool registered) {
+    if(s->origin_fd == -1) {
+        return;
+    }
+    if(registered) {
+        selector_unregister_fd(sel, s->origin_fd);
+    }
+    close(s->origin_fd);
+    s->origin_fd = -1;
+}
+
+/** libera la resolución del origen a lo sumo una vez y anula lista + cursor */
+static void
+connect_free_resolution(struct socks5 *s) {
+    if(s->origin_resolution != NULL) {
+        freeaddrinfo(s->origin_resolution);
+        s->origin_resolution = NULL;
+    }
+    s->origin_resolution_current = NULL;
+}
+
+/** limpia la dirección remota activa (ya no hay un origen en juego) */
+static void
+connect_clear_active_addr(struct socks5 *s) {
+    s->origin_addr_len = 0;
+    memset(&s->origin_addr, 0, sizeof(s->origin_addr));
+}
+
+/**
+ * fracaso terminal del connect: limpia el estado del origen, serializa el REPLY
+ * de error y habilita al cliente para enviarlo. Devuelve el próximo estado
+ * (REQUEST_WRITE, o ERROR si no se pudo dejar el REPLY listo sobre el cliente).
+ */
+static unsigned
+connect_fail(struct socks5 *s, fd_selector sel, uint8_t rep) {
+    connect_clear_active_addr(s);
+    connect_free_resolution(s);
+    if(request_reply(s, rep, SOCKS5_ATYP_IPV4, bnd_addr_none, 0) < 0) {
         return ERROR;
     }
-    // el interés del cliente se cambia por su fd explícito (no _key): la STM es
-    // compartida entre client_fd y origin_fd.
-    if(selector_set_interest(key->s, s->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
+    if(selector_set_interest(sel, s->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }
     return REQUEST_WRITE;
 }
 
-/** se dispara cuando el origen queda escribible: el connect terminó */
+//////////////////////////////////////////////////////////////////////
+
+/**
+ * recorre los candidatos de la resolución intentando un `connect' no bloqueante.
+ * En el primer candidato "activo" (connect da 0 o EINPROGRESS) copia la dirección
+ * remota, registra el origin_fd, pone el cliente en OP_NOOP y pasa a CONNECTING.
+ * Si un candidato falla, cierra su fd y prueba el siguiente. Agotados todos,
+ * responde el error.
+ *
+ * `errno' es volátil (close/selector lo pisan): se captura inmediatamente tras
+ * cada syscall fallida. Un error de connect() (verdicto de red) tiene precedencia
+ * sobre uno de socket()/nio (recurso local) al elegir el REP.
+ */
+static unsigned
+connect_try(struct selector_key *key) {
+    struct socks5     *s = ATTACHMENT(key);
+    struct connecting *d = &s->orig.conn;
+    bool had_connect_error = false;
+
+    while(s->origin_resolution_current != NULL) {
+        struct addrinfo *ai = s->origin_resolution_current;
+
+        s->origin_fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if(s->origin_fd == -1) {
+            const int e = errno;
+            if(!had_connect_error) {
+                d->last_error = e;
+            }
+            connect_close_origin(s, key->s, false);
+            s->origin_resolution_current = ai->ai_next;
+            continue;
+        }
+
+        if(selector_fd_set_nio(s->origin_fd) == -1) {
+            const int e = errno;
+            if(!had_connect_error) {
+                d->last_error = e;
+            }
+            connect_close_origin(s, key->s, false);
+            s->origin_resolution_current = ai->ai_next;
+            continue;
+        }
+
+        const int r             = connect(s->origin_fd, ai->ai_addr, ai->ai_addrlen);
+        const int connect_errno = errno;
+        if(r == 0 || connect_errno == EINPROGRESS) {
+            // candidato activo: copiamos la dirección remota antes de registrar.
+            if(ai->ai_addrlen <= sizeof(s->origin_addr)) {
+                memset(&s->origin_addr, 0, sizeof(s->origin_addr));
+                memcpy(&s->origin_addr, ai->ai_addr, ai->ai_addrlen);
+                s->origin_addr_len = ai->ai_addrlen;
+            }
+            // registrar el origin_fd antes de tocar el interés del cliente: si
+            // algo falla después, socksv5_done encuentra ambos fds registrados.
+            if(selector_register(key->s, s->origin_fd, socks5_handler_ref(),
+                                 OP_WRITE, s) != SELECTOR_SUCCESS) {
+                connect_close_origin(s, key->s, false);
+                return connect_fail(s, key->s, SOCKS5_REP_GENERAL_FAILURE);
+            }
+            s->references++;
+            // el cliente espera el REPLY: no leemos protocolo suyo durante el
+            // connect (si mandara bytes con OP_READ la STM haría abort()).
+            if(selector_set_interest(key->s, s->client_fd, OP_NOOP)
+               != SELECTOR_SUCCESS) {
+                return ERROR;
+            }
+            return CONNECTING;
+        }
+
+        // connect falló de inmediato: es un verdicto de red y tiene precedencia.
+        d->last_error     = connect_errno;
+        had_connect_error = true;
+        connect_close_origin(s, key->s, false);
+        s->origin_resolution_current = ai->ai_next;
+    }
+
+    // candidatos agotados sin conectar.
+    return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
+}
+
+/** inicia la resolución + conexión no bloqueante al origen */
+unsigned
+connect_start(struct selector_key *key) {
+    struct socks5     *s = ATTACHMENT(key);
+    struct connecting *d = &s->orig.conn;
+
+    d->last_error = 0;
+    const int gai = connect_resolve(s);
+    if(gai != 0) {
+        return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
+    }
+    return connect_try(key);
+}
+
+/**
+ * on_write_ready de CONNECTING (sobre origin_fd): el connect no bloqueante
+ * terminó. SO_ERROR dice si tuvo éxito.
+ */
 unsigned
 connecting(struct selector_key *key) {
-    // TODO: getsockopt(SO_ERROR), armar el REPLY y pasar a REQUEST_WRITE.
-    return DONE;
+    struct socks5     *s = ATTACHMENT(key);
+    struct connecting *d = &s->orig.conn;
+
+    int       err = 0;
+    socklen_t len = sizeof(err);
+    if(getsockopt(s->origin_fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) {
+        // no sabemos el estado real del connect: error interno, no fallo del
+        // destino. socksv5_done limpia ambos fds.
+        return ERROR;
+    }
+
+    if(err == 0) {
+        // connect exitoso. Orden que protege el REPLY: primero cortamos eventos
+        // del origen, después habilitamos al cliente recién con el REPLY listo.
+        if(selector_set_interest(key->s, s->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        connect_free_resolution(s);
+        // BND real (getsockname) queda para más adelante; por ahora 0.0.0.0:0.
+        if(request_reply(s, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV4,
+                         bnd_addr_none, 0) < 0) {
+            return ERROR;
+        }
+        if(selector_set_interest(key->s, s->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        return REQUEST_WRITE;
+    }
+
+    // fallo de red en este candidato: probamos el siguiente.
+    d->last_error = err;
+    struct addrinfo *next = (s->origin_resolution_current != NULL)
+                                ? s->origin_resolution_current->ai_next
+                                : NULL;
+    connect_close_origin(s, key->s, true);   // desregistra: references 2 → 1
+    s->origin_resolution_current = next;
+    if(s->origin_resolution_current != NULL) {
+        return connect_try(key);
+    }
+    return connect_fail(s, key->s, SOCKS5_REP_HOST_UNREACHABLE);
 }

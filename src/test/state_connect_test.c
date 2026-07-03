@@ -26,6 +26,30 @@ selector_set_interest(fd_selector s, int fd, fd_interest i) {
     return SELECTOR_SUCCESS;
 }
 
+selector_status
+selector_register(fd_selector s, const int fd, const fd_handler *handler,
+                  const fd_interest interest, void *data) {
+    (void)s; (void)fd; (void)handler; (void)interest; (void)data;
+    return SELECTOR_SUCCESS;
+}
+
+selector_status
+selector_unregister_fd(fd_selector s, const int fd) {
+    (void)s; (void)fd;
+    return SELECTOR_SUCCESS;
+}
+
+int
+selector_fd_set_nio(const int fd) {
+    (void)fd;
+    return 0;
+}
+
+const fd_handler *
+socks5_handler_ref(void) {
+    return NULL;
+}
+
 /* arma un `struct socks5' mínimo con el destino ya "parseado" */
 static void
 init_dest(struct socks5 *s, uint8_t atyp, const char *host, uint16_t port) {

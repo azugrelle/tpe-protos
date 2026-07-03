@@ -118,6 +118,11 @@ static const struct fd_handler socks5_handler = {
     .handle_block  = socksv5_block,
 };
 
+const fd_handler *
+socks5_handler_ref(void) {
+    return &socks5_handler;
+}
+
 /** Intenta aceptar la nueva conexión entrante*/
 void
 socksv5_passive_accept(struct selector_key *key) {
