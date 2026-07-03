@@ -140,9 +140,14 @@ struct auth_st {
 
 /* `struct request_st' (usado por REQUEST_READ) se declara en request_parser.h */
 
-/** usado por el estado de conexión al origin server */
+/** usado por el estado CONNECTING (conexión no bloqueante al origin server) */
 struct connecting {
-    int placeholder;
+    /** buffer de escritura donde se arma el REPLY (el mismo del `struct socks5') */
+    buffer  *wb;
+    /** código REP del reply, calculado según el resultado del connect (RFC 1928 §6) */
+    uint8_t  reply;
+    /** errno del último candidato fallido, preservado para traducirlo a REP */
+    int      last_error;
 };
 
 /** usado por COPY / relay bidireccional */
