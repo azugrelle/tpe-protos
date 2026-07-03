@@ -62,13 +62,25 @@ finally:
     return ret;
 }
 
+/**
+ * libera los recursos por-conexión (no la estructura en sí): hoy, la resolución
+ * del origen. Corre al cerrar la última referencia, tanto antes de encolar en el
+ * pool como al destruir de verdad, para que el `addrinfo' no se filtre si la
+ * estructura se reutiliza (el pool no pasa por `socks5_destroy_'). Idempotente.
+ */
+static void
+socks5_cleanup(struct socks5 *s) {
+    if(s->origin_resolution != NULL) {
+        freeaddrinfo(s->origin_resolution);
+        s->origin_resolution = NULL;
+    }
+    s->origin_resolution_current = NULL;
+}
+
 /** realmente destruye */
 static void
 socks5_destroy_(struct socks5* s) {
-    if(s->origin_resolution != NULL) {
-        freeaddrinfo(s->origin_resolution);
-        s->origin_resolution = 0;
-    }
+    socks5_cleanup(s);
     free(s);
 }
 
@@ -81,14 +93,15 @@ socks5_destroy(struct socks5 *s) {
     if(s == NULL) {
         // nada para hacer
     } else if(s->references == 1) {
-        if(s != NULL) {
-            if(pool_size < max_pool) {
-                s->next = pool;
-                pool    = s;
-                pool_size++;
-            } else {
-                socks5_destroy_(s);
-            }
+        // última referencia: liberar recursos por-conexión antes de poolear,
+        // porque el pool reutiliza la estructura sin pasar por socks5_destroy_.
+        socks5_cleanup(s);
+        if(pool_size < max_pool) {
+            s->next = pool;
+            pool    = s;
+            pool_size++;
+        } else {
+            socks5_destroy_(s);
         }
     } else {
         s->references -= 1;

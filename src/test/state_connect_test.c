@@ -11,23 +11,43 @@
 #include "states/state_connect.c"
 
 //////////////////////////////////////////////////////////////////////
-// Stubs de los símbolos externos que referencia state_connect.c, para que el
-// binario linkee sin selector.c / state_request.c.
+// Stubs de los símbolos externos que referencia state_connect.c, gobernados por
+// globals para inyectar fallos. `reset_injection' los deja en su valor neutro.
 
-/** cuántas veces se registró un fd (para asertar el balance de references) */
-static int g_register_calls = 0;
+static int     g_register_calls    = 0;  // intentos de selector_register
+static bool    g_register_fail     = false;
+static bool    g_setinterest_fail  = false;
+static int     g_reply_calls       = 0;  // llamadas a request_reply
+static uint8_t g_reply_rep         = 0;  // último REP serializado
+static bool    g_inject            = false;  // habilita el script de connect()
+static int     g_connect_calls     = 0;
+static int     g_connect_fail_until = 0;  // connect() falla mientras call <= este
+
+static void
+reset_injection(void) {
+    g_register_calls     = 0;
+    g_register_fail      = false;
+    g_setinterest_fail   = false;
+    g_reply_calls        = 0;
+    g_reply_rep          = 0;
+    g_inject             = false;
+    g_connect_calls      = 0;
+    g_connect_fail_until = 0;
+}
 
 int
 request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
               const uint8_t *bnd_addr, uint16_t bnd_port) {
-    (void)s; (void)rep; (void)bnd_atyp; (void)bnd_addr; (void)bnd_port;
+    (void)s; (void)bnd_atyp; (void)bnd_addr; (void)bnd_port;
+    g_reply_calls++;
+    g_reply_rep = rep;
     return 0;
 }
 
 selector_status
 selector_set_interest(fd_selector s, int fd, fd_interest i) {
     (void)s; (void)fd; (void)i;
-    return SELECTOR_SUCCESS;
+    return g_setinterest_fail ? SELECTOR_IO : SELECTOR_SUCCESS;
 }
 
 selector_status
@@ -35,14 +55,13 @@ selector_register(fd_selector s, const int fd, const fd_handler *handler,
                   const fd_interest interest, void *data) {
     (void)s; (void)fd; (void)handler; (void)interest; (void)data;
     g_register_calls++;
-    return SELECTOR_SUCCESS;
+    return g_register_fail ? SELECTOR_MAXFD : SELECTOR_SUCCESS;
 }
 
 // connect() se intercepta con --wrap: por defecto delega en el real; cuando el
-// test enciende g_inject, scriptea el resultado por número de llamada.
+// test enciende g_inject, falla (ECONNREFUSED) mientras el nº de llamada sea
+// <= g_connect_fail_until, y a partir de ahí devuelve éxito inmediato.
 extern int __real_connect(int fd, const struct sockaddr *addr, socklen_t len);
-static bool g_inject       = false;
-static int  g_connect_calls = 0;
 
 int
 __wrap_connect(int fd, const struct sockaddr *addr, socklen_t len) {
@@ -50,11 +69,11 @@ __wrap_connect(int fd, const struct sockaddr *addr, socklen_t len) {
         return __real_connect(fd, addr, len);
     }
     g_connect_calls++;
-    if(g_connect_calls == 1) {
-        errno = ECONNREFUSED;   // 1er candidato: connect inmediato falla
+    if(g_connect_calls <= g_connect_fail_until) {
+        errno = ECONNREFUSED;
         return -1;
     }
-    return 0;                   // 2do candidato: connect inmediato exitoso
+    return 0;
 }
 
 selector_status
@@ -199,9 +218,9 @@ START_TEST (test_connect_retry_second_candidate) {
 
     struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
 
-    g_inject = true; g_connect_calls = 0; g_register_calls = 0;
+    reset_injection();
+    g_inject = true; g_connect_fail_until = 1;   // 1er candidato falla, 2º conecta
     unsigned st = connect_try(&key);
-    g_inject = false;
 
     ck_assert_uint_eq(CONNECTING, st);
     ck_assert_uint_eq(2, s.references);                  // client_fd + origin_fd
@@ -216,6 +235,88 @@ START_TEST (test_connect_retry_second_candidate) {
     ck_assert_uint_eq(sizeof(a1), s.origin_addr_len);
 
     close(s.origin_fd);   // el fd real del 2º candidato quedó abierto
+}
+END_TEST
+
+START_TEST (test_register_failure_replies_general_failure) {
+    // candidato activo pero selector_register falla: no se toca references, el
+    // origin_fd se cierra una sola vez y se responde 0x01 → REQUEST_WRITE.
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    init_dest(&s, SOCKS5_ATYP_IPV4, "127.0.0.1", 1111);
+    ck_assert_int_eq(0, connect_resolve(&s));   // lista real (liberable)
+    s.client_fd  = 100;
+    s.origin_fd  = -1;
+    s.references = 1;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_inject = true; g_connect_fail_until = 0;  // connect activo de entrada
+    g_register_fail = true;
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_uint_eq(1, s.references);          // nunca se incrementó
+    ck_assert_int_eq(1, g_register_calls);       // un intento
+    ck_assert_int_eq(-1, s.origin_fd);           // cerrado, sin double-close
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, g_reply_rep);
+    ck_assert_ptr_null(s.origin_resolution);     // connect_fail liberó la lista
+}
+END_TEST
+
+START_TEST (test_setinterest_failure_returns_error) {
+    // register OK (references 1→2) pero set_interest(client) falla → ERROR, sin
+    // REPLY. El teardown de ambos fds lo hace socksv5_done (nivel servidor).
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    init_dest(&s, SOCKS5_ATYP_IPV4, "127.0.0.1", 1111);
+    ck_assert_int_eq(0, connect_resolve(&s));
+    s.client_fd  = 100;
+    s.origin_fd  = -1;
+    s.references = 1;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_inject = true; g_connect_fail_until = 0;
+    g_setinterest_fail = true;
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(ERROR, st);
+    ck_assert_uint_eq(2, s.references);          // register subió references
+    ck_assert_int_eq(1, g_register_calls);
+    ck_assert_int_ne(-1, s.origin_fd);           // sigue registrado (lo cierra socksv5_done)
+    ck_assert_int_eq(0, g_reply_calls);          // no hay REPLY por client_fd roto
+
+    close(s.origin_fd);                          // limpieza del test
+    freeaddrinfo(s.origin_resolution);
+}
+END_TEST
+
+START_TEST (test_getsockopt_failure_returns_error) {
+    // getsockopt(-1) falla ⇒ connecting lo trata como error interno: ERROR, sin
+    // REPLY y sin avanzar al siguiente candidato.
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    init_dest(&s, SOCKS5_ATYP_IPV4, "127.0.0.1", 1111);
+    ck_assert_int_eq(0, connect_resolve(&s));
+    struct addrinfo *head = s.origin_resolution_current;
+    s.client_fd  = 100;
+    s.origin_fd  = -1;   // getsockopt(-1) devuelve -1
+    s.references = 2;
+
+    struct selector_key key = { .s = NULL, .fd = s.origin_fd, .data = &s };
+
+    reset_injection();
+    unsigned st = connecting(&key);
+
+    ck_assert_uint_eq(ERROR, st);
+    ck_assert_int_eq(0, g_reply_calls);                       // no hay REPLY
+    ck_assert_ptr_eq(head, s.origin_resolution_current);      // cursor sin avanzar
+
+    freeaddrinfo(s.origin_resolution);
 }
 END_TEST
 
@@ -251,6 +352,9 @@ suite(void) {
     tcase_add_test(tc, test_bnd_from_bound_socket);
     tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
     tcase_add_test(tc, test_connect_retry_second_candidate);
+    tcase_add_test(tc, test_register_failure_replies_general_failure);
+    tcase_add_test(tc, test_setinterest_failure_returns_error);
+    tcase_add_test(tc, test_getsockopt_failure_returns_error);
     tcase_add_test(tc, test_errno_to_rep);
     tcase_add_test(tc, test_gai_error_to_rep);
     suite_add_tcase(s, tc);
