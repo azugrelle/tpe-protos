@@ -11,6 +11,14 @@
 /** inicializa el estado REQUEST_READ (on_arrival) */
 void request_read_init(const unsigned state, struct selector_key *key);
 
+/**
+ * serializa el reply del REQUEST (RFC 1928 §6) en `s->write_buffer'. Único punto
+ * de serialización del reply: los errores pasan IPv4/0.0.0.0/0 y el éxito el BND
+ * real. Devuelve <0 si el reply no entra en el buffer.
+ */
+int request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
+                  const uint8_t *bnd_addr, uint16_t bnd_port);
+
 /** lee y parsea el pedido `request' del cliente */
 unsigned request_read(struct selector_key *key);
 

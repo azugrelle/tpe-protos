@@ -7,9 +7,9 @@
  * en el camino válido, y cuando el connect termina se manda el REPLY real y se
  * pasa a REQUEST_WRITE.
  *
- * Por ahora es un esqueleto: los dos puntos de entrada existen y compilan, pero
- * todavía nadie los referencia (el enum y la tabla de estados se agregan en el
- * paso siguiente) ni resuelven/conectan de verdad.
+ * `connect_resolve' (síncrona, aislada) ya arma la lista de direcciones del
+ * destino, pero `connect_start' todavía no la usa: responde un error temporal
+ * mientras se implementa el connect no bloqueante.
  */
 #include <stdio.h>        // snprintf
 #include <string.h>       // memset
@@ -20,18 +20,18 @@
 #include "include/state_request.h"   // request_reply
 #include "request_parser.h"          // SOCKS5_ATYP_IPV4, SOCKS5_REP_*
 
-/** BND.ADDR de los replies mientras no hay BND real (0.0.0.0); paso 7 lo llena */
+/** BND.ADDR de los replies mientras no hay BND real (0.0.0.0) */
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
 
 /**
  * resuelve el destino (dest_host:dest_port) a una lista de `addrinfo' lista
- * para `connect'. Síncrono por ahora: bloquea el loop un instante (T50 lo mueve
- * a un hilo sin tocar el resto). Aislada a propósito para eso.
+ * para `connect'. Síncrono por ahora: bloquea el loop un instante. Está aislada
+ * a propósito para poder moverla a un hilo más adelante sin tocar el resto.
  *
  * Deja la lista en `s->origin_resolution' y el cursor en
- * `s->origin_resolution_current'. Alcance T40: IPv4 + FQDN (IPv6 → T52), por eso
- * el hint `AF_INET' (no `AF_UNSPEC'): con AAAA primero conectaríamos por IPv6 y
- * el BND, que hoy solo sabe IPv4, degradaría a 0.0.0.0:0.
+ * `s->origin_resolution_current'. Por ahora solo IPv4 y FQDN, por eso el hint
+ * `AF_INET' (no `AF_UNSPEC'): con un FQDN con AAAA conectaríamos por IPv6 y el
+ * BND, que hoy solo sabe IPv4, degradaría a 0.0.0.0:0.
  *
  * Devuelve el código de retorno de `getaddrinfo' (0 éxito, EAI_* en error).
  */
@@ -67,16 +67,15 @@ unsigned
 connect_start(struct selector_key *key) {
     struct socks5 *s = ATTACHMENT(key);
 
-    // Stub temporal (paso 5): todavía no resolvemos ni abrimos sockets — el
-    // connect real es el paso 6, que cablea connect_resolve. Por ahora un CONNECT
-    // recibe un REPLY de error honesto (sin hang ni abort) para cerrar el flujo.
+    // Todavía no resolvemos ni abrimos sockets: por ahora un CONNECT recibe un
+    // REPLY de error temporal (sin hang ni abort) para cerrar el flujo.
     (void)connect_resolve;
     if(request_reply(s, SOCKS5_REP_GENERAL_FAILURE, SOCKS5_ATYP_IPV4,
                      bnd_addr_none, 0) < 0) {
         return ERROR;
     }
-    // fd nombrado (no _key): la STM es compartida y connect_start correrá también
-    // desde origin_fd en el paso 6 (D-018 · fd explícito).
+    // el interés del cliente se cambia por su fd explícito (no _key): la STM es
+    // compartida entre client_fd y origin_fd.
     if(selector_set_interest(key->s, s->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }

@@ -1,6 +1,6 @@
 include ./Makefile.inc
 
-# echoWithSelector.c es el echo standalone de M0 (tiene su propio main()): se
+# echoWithSelector.c es el echo standalone (tiene su propio main()): se
 # excluye del binario `server' para no chocar con src/server/main.c.
 SERVER_SOURCES=$(filter-out src/server/echoWithSelector.c, \
                $(wildcard src/server/*.c) $(wildcard src/server/states/*.c) \
@@ -44,7 +44,8 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/parser_test \
       $(TEST_FOLDER)/parser_utils_test \
       $(TEST_FOLDER)/stm_test \
-      $(TEST_FOLDER)/request_parser_test
+      $(TEST_FOLDER)/request_parser_test \
+      $(TEST_FOLDER)/state_connect_test
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
@@ -80,8 +81,14 @@ $(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/re
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) src/test/request_parser_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
+# state_connect_test incluye state_connect.c inline y NO linkea selector.c: el
+# harness satisface con stubs propios los símbolos externos del módulo.
+$(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/states/state_connect.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
+
 clean:
 	rm -rf $(OUTPUT_FOLDER)
-	rm -rf $(OBJECT_FOLDER)
+	rm -rf $(OBJECTS_FOLDER)
 
 .PHONY: all server client test clean

@@ -6,14 +6,12 @@
 
 // se incluye el .c para poder probar sus funciones estáticas (connect_resolve)
 // sin linkear selector.c ni state_request.c: los símbolos externos que referencia
-// el módulo se satisfacen con stubs propios (abajo). El paso 9 los amplía con los
-// stubs de fallo (fault injection).
+// el módulo se satisfacen con stubs propios (abajo).
 #include "states/state_connect.c"
 
 //////////////////////////////////////////////////////////////////////
-// Stubs de los símbolos externos que referencia state_connect.c.
-// connect_resolve (lo único que se prueba en el paso 4) no los usa; están para
-// que el binario linkee sin selector.c / state_request.c.
+// Stubs de los símbolos externos que referencia state_connect.c, para que el
+// binario linkee sin selector.c / state_request.c. connect_resolve no los usa.
 
 int
 request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,

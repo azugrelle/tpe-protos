@@ -2,17 +2,25 @@
  * state_request.c -- handlers de los estados REQUEST_READ / REQUEST_WRITE del
  * proxy SOCKSv5 (RFC 1928 §4).
  *
- * Lee y parsea el pedido del cliente (CONNECT) y le responde un reply. Todavía
- * no se conecta al origen: el reply de éxito es temporal (BND 0.0.0.0:0) para
- * poder ver el flujo de punta a punta; la conexión real se agrega más adelante.
+ * Lee y parsea el pedido del cliente (CONNECT) y lo valida. Este módulo NO
+ * resuelve DNS ni abre sockets: si el pedido es válido delega en `connect_start'
+ * (state_connect.c), que es el dueño de la resolución + conexión al origen; solo
+ * los errores de parseo/validación se responden acá.
  */
 #include <stdio.h>        // fprintf
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_request.h"
+#include "include/state_connect.h"
 
-/** BND.ADDR temporal del reply mientras no hay conexión real al origen */
+/** BND.ADDR de los replies de error (0.0.0.0), único ATYP IPv4 */
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
+
+int
+request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
+              const uint8_t *bnd_addr, uint16_t bnd_port) {
+    return request_marshall(&s->write_buffer, rep, bnd_atyp, bnd_addr, bnd_port);
+}
 
 /** inicializa el estado REQUEST_READ */
 void
@@ -40,7 +48,7 @@ request_rep(struct socks5 *s) {
             }
             fprintf(stderr, "request: CONNECT atyp=%u %s:%u\n",
                     (unsigned)s->dest_atyp, s->dest_host, (unsigned)s->dest_port);
-            // éxito temporal: todavía no conectamos al origen.
+            // destino válido: connect_start resuelve y conecta al origen.
             return SOCKS5_REP_SUCCEEDED;
 
         case request_error_unsupported_cmd:
@@ -52,16 +60,19 @@ request_rep(struct socks5 *s) {
     }
 }
 
-/** arma el reply en el buffer de escritura y pasa a enviarlo */
+/** valida el pedido: si es válido delega en connect_start, si no responde error */
 static unsigned
 request_process(struct selector_key *key) {
-    struct socks5     *s = ATTACHMENT(key);
-    struct request_st *d = &s->client.request;
+    struct socks5 *s = ATTACHMENT(key);
 
     const uint8_t rep = request_rep(s);
+    if(rep == SOCKS5_REP_SUCCEEDED) {
+        // destino válido: la resolución + conexión al origen es de connect_start.
+        return connect_start(key);
+    }
 
-    // BND real llega junto con la conexión al origen; por ahora 0.0.0.0:0.
-    if(request_marshall(d->wb, rep, SOCKS5_ATYP_IPV4, bnd_addr_none, 0) < 0) {
+    // error de parseo/validación (CMD/ATYP): respondemos el error sin conectar.
+    if(request_reply(s, rep, SOCKS5_ATYP_IPV4, bnd_addr_none, 0) < 0) {
         return ERROR;
     }
     if(selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {

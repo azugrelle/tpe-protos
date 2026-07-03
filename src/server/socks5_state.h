@@ -196,6 +196,8 @@ struct socks5 {
 
     /** resolución del origin server (DNS async); se libera al destruir */
     struct addrinfo              *origin_resolution;
+    /** cursor (borrowed) dentro de origin_resolution; NULL si no hay/agotado */
+    struct addrinfo              *origin_resolution_current;
     /** información de la conexión con el origin server */
     struct sockaddr_storage       origin_addr;
     socklen_t                     origin_addr_len;
