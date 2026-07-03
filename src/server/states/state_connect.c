@@ -19,8 +19,9 @@
 #include <string.h>       // memset, memcpy
 #include <unistd.h>       // close
 #include <netdb.h>        // getaddrinfo, AI_NUMERICHOST
-#include <sys/socket.h>   // socket, connect, getsockopt, SO_ERROR
-#include <netinet/in.h>   // IPPROTO_TCP
+#include <sys/socket.h>   // socket, connect, getsockopt, getsockname, SO_ERROR
+#include <netinet/in.h>   // IPPROTO_TCP, sockaddr_in
+#include <arpa/inet.h>    // ntohs
 
 #include "include/state_connect.h"
 #include "include/state_request.h"   // request_reply
@@ -220,6 +221,31 @@ connect_start(struct selector_key *key) {
 }
 
 /**
+ * completa el BND del reply de éxito con la dirección local del origin_fd
+ * (getsockname, RFC 1928 §6): es el endpoint que el kernel le asignó al socket
+ * de origen, no el peer remoto. Si getsockname falla o la familia no es IPv4,
+ * degrada a 0.0.0.0:0 (la conexión ya está establecida y el BND es informativo,
+ * no es un fallo). Solo IPv4 por ahora.
+ */
+static void
+connect_reply_bnd(int fd, uint8_t *bnd_atyp, uint8_t bnd_addr[4],
+                  uint16_t *bnd_port) {
+    struct sockaddr_storage local;
+    socklen_t              len = sizeof(local);
+
+    *bnd_atyp = SOCKS5_ATYP_IPV4;
+    if(getsockname(fd, (struct sockaddr *)&local, &len) == 0
+       && local.ss_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)&local;
+        memcpy(bnd_addr, &sin->sin_addr, 4);
+        *bnd_port = ntohs(sin->sin_port);
+        return;
+    }
+    memset(bnd_addr, 0, 4);
+    *bnd_port = 0;
+}
+
+/**
  * on_write_ready de CONNECTING (sobre origin_fd): el connect no bloqueante
  * terminó. SO_ERROR dice si tuvo éxito.
  */
@@ -243,9 +269,11 @@ connecting(struct selector_key *key) {
             return ERROR;
         }
         connect_free_resolution(s);
-        // BND real (getsockname) queda para más adelante; por ahora 0.0.0.0:0.
-        if(request_reply(s, SOCKS5_REP_SUCCEEDED, SOCKS5_ATYP_IPV4,
-                         bnd_addr_none, 0) < 0) {
+        uint8_t  bnd_atyp;
+        uint8_t  bnd_addr[4];
+        uint16_t bnd_port;
+        connect_reply_bnd(s->origin_fd, &bnd_atyp, bnd_addr, &bnd_port);
+        if(request_reply(s, SOCKS5_REP_SUCCEEDED, bnd_atyp, bnd_addr, bnd_port) < 0) {
             return ERROR;
         }
         if(selector_set_interest(key->s, s->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {

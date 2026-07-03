@@ -100,6 +100,47 @@ START_TEST (test_resolve_numerichost_rejects_fqdn) {
 }
 END_TEST
 
+START_TEST (test_bnd_from_bound_socket) {
+    // getsockname sobre un socket con dirección local conocida devuelve ese BND.
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    a.sin_port        = 0;   // puerto efímero
+    ck_assert_int_eq(0, bind(fd, (struct sockaddr *)&a, sizeof(a)));
+    struct sockaddr_in got;
+    socklen_t gl = sizeof(got);
+    ck_assert_int_eq(0, getsockname(fd, (struct sockaddr *)&got, &gl));
+
+    uint8_t  atyp;
+    uint8_t  addr[4];
+    uint16_t port;
+    connect_reply_bnd(fd, &atyp, addr, &port);
+
+    ck_assert_uint_eq(SOCKS5_ATYP_IPV4, atyp);
+    uint8_t expect[4] = {127, 0, 0, 1};
+    ck_assert_int_eq(0, memcmp(addr, expect, 4));
+    ck_assert_uint_eq(ntohs(got.sin_port), port);
+    close(fd);
+}
+END_TEST
+
+START_TEST (test_bnd_degrades_on_bad_fd) {
+    // getsockname sobre un fd inválido falla ⇒ BND degradado a 0.0.0.0:0.
+    uint8_t  atyp = 0xFF;
+    uint8_t  addr[4] = {9, 9, 9, 9};
+    uint16_t port = 1234;
+    connect_reply_bnd(-1, &atyp, addr, &port);
+
+    ck_assert_uint_eq(SOCKS5_ATYP_IPV4, atyp);
+    uint8_t zero[4] = {0, 0, 0, 0};
+    ck_assert_int_eq(0, memcmp(addr, zero, 4));
+    ck_assert_uint_eq(0, port);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_connect");
@@ -107,6 +148,8 @@ suite(void) {
 
     tcase_add_test(tc, test_resolve_ipv4_literal);
     tcase_add_test(tc, test_resolve_numerichost_rejects_fqdn);
+    tcase_add_test(tc, test_bnd_from_bound_socket);
+    tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
     suite_add_tcase(s, tc);
 
     return s;
