@@ -129,6 +129,31 @@ START_TEST (test_resolve_ipv4_literal) {
 }
 END_TEST
 
+START_TEST (test_resolve_ipv6_literal) {
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_IPV6, "::1", 8080);
+
+    int gai = connect_resolve(&s);
+
+    ck_assert_int_eq(0, gai);
+    ck_assert_ptr_nonnull(s.origin_resolution);
+    ck_assert_ptr_eq(s.origin_resolution, s.origin_resolution_current);
+
+    struct addrinfo *ai = s.origin_resolution;
+    ck_assert_int_eq(AF_INET6,    ai->ai_family);
+    ck_assert_int_eq(SOCK_STREAM, ai->ai_socktype);
+    ck_assert_int_eq(IPPROTO_TCP, ai->ai_protocol);
+
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ai->ai_addr;
+    ck_assert_int_eq(AF_INET6, sin6->sin6_family);
+    ck_assert_uint_eq(htons(8080), sin6->sin6_port);
+    struct in6_addr expect = IN6ADDR_LOOPBACK_INIT;
+    ck_assert_int_eq(0, memcmp(&expect, &sin6->sin6_addr, sizeof(expect)));
+
+    freeaddrinfo(s.origin_resolution);
+}
+END_TEST
+
 START_TEST (test_resolve_numerichost_rejects_fqdn) {
     // ATYP IPv4 ⇒ AI_NUMERICHOST: un FQDN no numérico debe fallar SIN tocar la
     // red (prueba hermética de que el flag quedó puesto). No hay lookup DNS.
@@ -158,7 +183,7 @@ START_TEST (test_bnd_from_bound_socket) {
     ck_assert_int_eq(0, getsockname(fd, (struct sockaddr *)&got, &gl));
 
     uint8_t  atyp;
-    uint8_t  addr[4];
+    uint8_t  addr[16];
     uint16_t port;
     connect_reply_bnd(fd, &atyp, addr, &port);
 
@@ -173,7 +198,7 @@ END_TEST
 START_TEST (test_bnd_degrades_on_bad_fd) {
     // getsockname sobre un fd inválido falla ⇒ BND degradado a 0.0.0.0:0.
     uint8_t  atyp = 0xFF;
-    uint8_t  addr[4] = {9, 9, 9, 9};
+    uint8_t  addr[16] = {9, 9, 9, 9};
     uint16_t port = 1234;
     connect_reply_bnd(-1, &atyp, addr, &port);
 
@@ -181,6 +206,32 @@ START_TEST (test_bnd_degrades_on_bad_fd) {
     uint8_t zero[4] = {0, 0, 0, 0};
     ck_assert_int_eq(0, memcmp(addr, zero, 4));
     ck_assert_uint_eq(0, port);
+}
+END_TEST
+
+START_TEST (test_bnd_from_bound_socket_ipv6) {
+    // mismo caso que test_bnd_from_bound_socket pero con un socket IPv6.
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    struct sockaddr_in6 a;
+    memset(&a, 0, sizeof(a));
+    a.sin6_family = AF_INET6;
+    a.sin6_addr   = in6addr_loopback;
+    a.sin6_port   = 0;   // puerto efímero
+    ck_assert_int_eq(0, bind(fd, (struct sockaddr *)&a, sizeof(a)));
+    struct sockaddr_in6 got;
+    socklen_t gl = sizeof(got);
+    ck_assert_int_eq(0, getsockname(fd, (struct sockaddr *)&got, &gl));
+
+    uint8_t  atyp;
+    uint8_t  addr[16];
+    uint16_t port;
+    connect_reply_bnd(fd, &atyp, addr, &port);
+
+    ck_assert_uint_eq(SOCKS5_ATYP_IPV6, atyp);
+    ck_assert_int_eq(0, memcmp(addr, &in6addr_loopback, 16));
+    ck_assert_uint_eq(ntohs(got.sin6_port), port);
+    close(fd);
 }
 END_TEST
 
@@ -348,8 +399,10 @@ suite(void) {
     TCase *tc = tcase_create("connect_resolve");
 
     tcase_add_test(tc, test_resolve_ipv4_literal);
+    tcase_add_test(tc, test_resolve_ipv6_literal);
     tcase_add_test(tc, test_resolve_numerichost_rejects_fqdn);
     tcase_add_test(tc, test_bnd_from_bound_socket);
+    tcase_add_test(tc, test_bnd_from_bound_socket_ipv6);
     tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
     tcase_add_test(tc, test_connect_retry_second_candidate);
     tcase_add_test(tc, test_register_failure_replies_general_failure);

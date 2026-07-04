@@ -36,7 +36,7 @@ static const uint8_t SOCKS5_REQ_CMD_CONNECT       = 0x01;
 static const uint8_t SOCKS5_REQ_CMD_BIND          = 0x02;
 static const uint8_t SOCKS5_REQ_CMD_UDP_ASSOCIATE = 0x03;
 
-/** tipos de dirección (ATYP). IPv6 se parsea pero se completa en T52. */
+/** tipos de dirección (ATYP): IPv4, FQDN e IPv6 están soportados. */
 static const uint8_t SOCKS5_ATYP_IPV4   = 0x01;
 static const uint8_t SOCKS5_ATYP_DOMAIN = 0x03;
 static const uint8_t SOCKS5_ATYP_IPV6   = 0x04;
@@ -47,9 +47,10 @@ static const uint8_t SOCKS5_IPV6_ADDR_LEN = 16;
 static const uint8_t SOCKS5_PORT_LEN      = 2;
 
 /*
- * Códigos de respuesta (REP) del reply, RFC 1928 §6. Por ahora solo se usan
- * SUCCEEDED (éxito temporal para inspección), CMD_NOT_SUPPORTED y
- * ATYP_NOT_SUPPORTED; el resto los vamos a usar mas adelante para reportar errores de conexión.
+ * Códigos de respuesta (REP) del reply, RFC 1928 §6. SUCCEEDED, CMD_NOT_SUPPORTED
+ * y ATYP_NOT_SUPPORTED se usan al validar el REQUEST; el resto los traduce
+ * state_connect.c a partir del errno de connect()/getaddrinfo() (ver errno_to_rep
+ * y gai_error_to_rep).
  */
 static const uint8_t SOCKS5_REP_SUCCEEDED           = 0x00;
 static const uint8_t SOCKS5_REP_GENERAL_FAILURE     = 0x01;
@@ -166,9 +167,9 @@ int request_marshall(buffer *b, const uint8_t rep, const uint8_t bnd_atyp,
  * `outlen', NUL incluido), listo para loguear o resolver por DNS:
  *   - IPv4 : notación dotted (p.ej. "1.2.3.4").
  *   - FQDN : el nombre tal cual.
- *   - IPv6 : todavía no se reconstruye en M1 (se completa en T52).
- * Es solo formateo, no hace I/O. Retorna 0 si pudo, -1 si el ATYP no se puede
- * representar todavía o si `out' no tiene espacio.
+ *   - IPv6 : notación RFC 4291 (p.ej. "::1"), vía inet_ntop.
+ * Es solo formateo, no hace I/O. Retorna 0 si pudo, -1 si el ATYP es
+ * desconocido o si `out' no tiene espacio.
  */
 int request_addr_to_string(const struct request_parser *p, char *out, size_t outlen);
 

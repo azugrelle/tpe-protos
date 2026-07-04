@@ -214,7 +214,7 @@ START_TEST (test_addr_to_string_fqdn) {
 }
 END_TEST
 
-START_TEST (test_addr_to_string_ipv6_pending) {
+START_TEST (test_addr_to_string_ipv6) {
     struct request_parser p;
     request_parser_init(&p);
     bool err = false;
@@ -223,8 +223,8 @@ START_TEST (test_addr_to_string_ipv6_pending) {
     feed_all(&p, msg, N(msg), &err);
 
     char host[64];
-    // IPv6 todavía no se reconstruye en M1 (T52).
-    ck_assert_int_eq(-1, request_addr_to_string(&p, host, sizeof(host)));
+    ck_assert_int_eq(0, request_addr_to_string(&p, host, sizeof(host)));
+    ck_assert_str_eq("::1", host);
 }
 END_TEST
 
@@ -326,7 +326,7 @@ suite(void) {
     tcase_add_test(tc, test_request_port_fragmented);
     tcase_add_test(tc, test_addr_to_string_ipv4);
     tcase_add_test(tc, test_addr_to_string_fqdn);
-    tcase_add_test(tc, test_addr_to_string_ipv6_pending);
+    tcase_add_test(tc, test_addr_to_string_ipv6);
     tcase_add_test(tc, test_addr_to_string_no_space);
     tcase_add_test(tc, test_marshall_success_ipv4);
     tcase_add_test(tc, test_marshall_port_network_order);

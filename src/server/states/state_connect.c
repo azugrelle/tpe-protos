@@ -66,9 +66,10 @@ gai_error_to_rep(int gai) {
  * a propósito para poder moverla a un hilo más adelante sin tocar el resto.
  *
  * Deja la lista en `s->origin_resolution' y el cursor en
- * `s->origin_resolution_current'. Por ahora solo IPv4 y FQDN, por eso el hint
- * `AF_INET' (no `AF_UNSPEC'): con un FQDN con AAAA conectaríamos por IPv6 y el
- * BND, que hoy solo sabe IPv4, degradaría a 0.0.0.0:0.
+ * `s->origin_resolution_current'. El hint de familia depende del ATYP pedido:
+ * IPv4/IPv6 literales fuerzan su familia + `AI_NUMERICHOST' (sin lookup DNS);
+ * un FQDN se resuelve dual-stack (`AF_UNSPEC'), ya que tanto `connect_try' como
+ * el BND del reply (`connect_reply_bnd') soportan ambas familias.
  *
  * Devuelve el código de retorno de `getaddrinfo' (0 éxito, EAI_* en error).
  */
@@ -79,12 +80,18 @@ connect_resolve(struct socks5 *s) {
 
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     if(s->dest_atyp == SOCKS5_ATYP_IPV4) {
         // el host ya es un literal dotted → sin lookup DNS
+        hints.ai_family = AF_INET;
         hints.ai_flags |= AI_NUMERICHOST;
+    } else if(s->dest_atyp == SOCKS5_ATYP_IPV6) {
+        // el host ya es un literal IPv6 → sin lookup DNS
+        hints.ai_family = AF_INET6;
+        hints.ai_flags |= AI_NUMERICHOST;
+    } else {
+        hints.ai_family = AF_UNSPEC;
     }
 
     s->origin_resolution = NULL;
@@ -252,24 +259,34 @@ connect_start(struct selector_key *key) {
 /**
  * completa el BND del reply de éxito con la dirección local del origin_fd
  * (getsockname, RFC 1928 §6): es el endpoint que el kernel le asignó al socket
- * de origen, no el peer remoto. Si getsockname falla o la familia no es IPv4,
- * degrada a 0.0.0.0:0 (la conexión ya está establecida y el BND es informativo,
- * no es un fallo). Solo IPv4 por ahora.
+ * de origen, no el peer remoto. Devuelve ATYP IPv4 o IPv6 según la familia real
+ * del socket. Si getsockname falla o la familia no es IPv4/IPv6, degrada a
+ * ATYP IPv4 0.0.0.0:0 (la conexión ya está establecida y el BND es informativo,
+ * no es un fallo).
  */
 static void
-connect_reply_bnd(int fd, uint8_t *bnd_atyp, uint8_t bnd_addr[4],
+connect_reply_bnd(int fd, uint8_t *bnd_atyp, uint8_t bnd_addr[16],
                   uint16_t *bnd_port) {
     struct sockaddr_storage local;
     socklen_t              len = sizeof(local);
 
-    *bnd_atyp = SOCKS5_ATYP_IPV4;
-    if(getsockname(fd, (struct sockaddr *)&local, &len) == 0
-       && local.ss_family == AF_INET) {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)&local;
-        memcpy(bnd_addr, &sin->sin_addr, 4);
-        *bnd_port = ntohs(sin->sin_port);
-        return;
+    if(getsockname(fd, (struct sockaddr *)&local, &len) == 0) {
+        if(local.ss_family == AF_INET) {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)&local;
+            *bnd_atyp = SOCKS5_ATYP_IPV4;
+            memcpy(bnd_addr, &sin->sin_addr, 4);
+            *bnd_port = ntohs(sin->sin_port);
+            return;
+        }
+        if(local.ss_family == AF_INET6) {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&local;
+            *bnd_atyp = SOCKS5_ATYP_IPV6;
+            memcpy(bnd_addr, &sin6->sin6_addr, 16);
+            *bnd_port = ntohs(sin6->sin6_port);
+            return;
+        }
     }
+    *bnd_atyp = SOCKS5_ATYP_IPV4;
     memset(bnd_addr, 0, 4);
     *bnd_port = 0;
 }
@@ -299,7 +316,7 @@ connecting(struct selector_key *key) {
         }
         connect_free_resolution(s);
         uint8_t  bnd_atyp;
-        uint8_t  bnd_addr[4];
+        uint8_t  bnd_addr[16];
         uint16_t bnd_port;
         connect_reply_bnd(s->origin_fd, &bnd_atyp, bnd_addr, &bnd_port);
         if(request_reply(s, SOCKS5_REP_SUCCEEDED, bnd_atyp, bnd_addr, bnd_port) < 0) {

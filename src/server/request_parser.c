@@ -200,6 +200,10 @@ request_addr_to_string(const struct request_parser *p, char *out, size_t outlen)
         out[p->dst_addr_len] = '\0';
         return 0;
     }
-    // IPv6 (u otro): reconstrucción pendiente para T52.
+    if(SOCKS5_ATYP_IPV6 == p->atyp) {
+        return inet_ntop(AF_INET6, p->dst_addr, out, (socklen_t)outlen) == NULL
+               ? -1 : 0;
+    }
+    // ATYP desconocido: no hay forma de representarlo como string.
     return -1;
 }

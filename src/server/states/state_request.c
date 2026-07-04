@@ -43,7 +43,7 @@ request_rep(struct socks5 *s) {
             s->dest_atyp = p->atyp;
             s->dest_port = p->dst_port;
             if(request_addr_to_string(p, s->dest_host, sizeof(s->dest_host)) != 0) {
-                // destino no representable todavía (p.ej. IPv6).
+                // no debería pasar: el parser ya validó el ATYP.
                 return SOCKS5_REP_ATYP_NOT_SUPPORTED;
             }
             fprintf(stderr, "request: CONNECT atyp=%u %s:%u\n",
