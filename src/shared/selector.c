@@ -108,19 +108,7 @@ struct item {
    void *              data;
 };
 
-/* tarea bloqueante */
-struct blocking_job {
-    /** selector dueño de la resolucion */
-    fd_selector  s;
-    /** file descriptor dueño de la resolucion */
-    int fd;
-
-    /** datos del trabajo provisto por el usuario */
-    void *data;
-
-    /** el siguiente en la lista */
-    struct blocking_job *next;
-};
+/* la tarea bloqueante (struct blocking_job) se declara en selector.h */
 
 /** marca para usar en item->fd para saber que no está en uso */
 static const int FD_UNUSED = -1;
@@ -309,18 +297,24 @@ selector_destroy(fd_selector s) {
     // lean ya que se llama desde los casos fallidos de _new.
     if(s != NULL) {
         if(s->fds != NULL) {
+            // los jobs pendientes se drenan ANTES de desregistrar los fds:
+            // un job embebido vive en el estado de su conexión, y el
+            // handle_close del unregister puede liberarlo.
+            struct blocking_job* j = s->resolution_jobs;
+            while (j != NULL) {
+                struct blocking_job* next = j->next;
+                if(j->heap) {
+                    free(j);
+                }
+                j = next;
+            }
+            s->resolution_jobs = NULL;
             for(size_t i = 0; i < s->fd_size ; i++) {
                 if(ITEM_USED(s->fds + i)) {
                     selector_unregister_fd(s, i);
                 }
             }
             pthread_mutex_destroy(&s->resolution_mutex);
-            struct blocking_job* j = s->resolution_jobs;
-            while (j != NULL) {
-                struct blocking_job* aux = j;
-                j = j->next;
-                free(aux);
-            }
             free(s->fds);
             s->fds     = NULL;
             s->fd_size = 0;
@@ -488,6 +482,10 @@ handle_block_notifications(fd_selector s) {
     pthread_mutex_lock(&s->resolution_mutex);
     struct blocking_job* j = s->resolution_jobs;
     while (j != NULL) {
+        // el callback puede destruir a la conexión dueña de un job embebido:
+        // todo lo que haga falta del job se captura antes de despachar.
+        struct blocking_job* next = j->next;
+        const bool           heap = j->heap;
 
         struct item* item = s->fds + j->fd;
         if (ITEM_USED(item)) {
@@ -496,26 +494,19 @@ handle_block_notifications(fd_selector s) {
             item->handler->handle_block(&key);
         }
 
-        struct blocking_job* aux = j;
-        j = j->next;
-        free(aux);
+        if (heap) {
+            free(j);
+        }
+        j = next;
     }
     s->resolution_jobs = 0;
     pthread_mutex_unlock(&s->resolution_mutex);
 }
 
-
 selector_status
-selector_notify_block(fd_selector  s,
-                 const int    fd) {
-    selector_status ret = SELECTOR_SUCCESS;
-
-    // TODO(juan): usar un pool
-    struct blocking_job *job = malloc(sizeof(*job));
-    if(job == NULL) {
-        ret = SELECTOR_ENOMEM;
-        goto finally;
-    }
+selector_notify_block_job(fd_selector  s,
+                 const int    fd,
+                 struct blocking_job *job) {
     job->s  = s;
     job->fd = fd;
 
@@ -528,8 +519,20 @@ selector_notify_block(fd_selector  s,
     // notificamos al hilo principal
     pthread_kill(s->selector_thread, conf.signal);
 
-finally:
-    return ret;
+    return SELECTOR_SUCCESS;
+}
+
+selector_status
+selector_notify_block(fd_selector  s,
+                 const int    fd) {
+    // TODO(juan): usar un pool
+    struct blocking_job *job = malloc(sizeof(*job));
+    if(job == NULL) {
+        return SELECTOR_ENOMEM;
+    }
+    job->data = NULL;
+    job->heap = true;
+    return selector_notify_block_job(s, fd, job);
 }
 
 selector_status

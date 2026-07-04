@@ -151,7 +151,64 @@ START_TEST (test_selector_register_unregister_register) {
 }
 END_TEST
 
-Suite * 
+static unsigned block_count = 0;
+static void
+block_callback(struct selector_key *key) {
+    ck_assert_ptr_eq(data_mark, key->data);
+    block_count++;
+}
+
+START_TEST (test_notify_block_job) {
+    // el notify termina en pthread_kill(selector_thread, conf.signal): hace
+    // falta la señal configurada (con su handler no-op) y un thread real.
+    const struct selector_init init_conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 1, .tv_nsec = 0 },
+    };
+    ck_assert_int_eq(0, selector_init(&init_conf));
+
+    destroy_count = 0;
+    block_count   = 0;
+    fd_selector s = selector_new(INITIAL_SIZE);
+    ck_assert_ptr_nonnull(s);
+    s->selector_thread = pthread_self();
+
+    const struct fd_handler h = {
+        .handle_close = destroy_callback,
+        .handle_block = block_callback,
+    };
+    const int fd = 42;
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_register(s, fd, &h, 0, data_mark));
+
+    // job embebido (heap = false): se despacha y el selector no lo libera
+    struct blocking_job job;
+    memset(&job, 0, sizeof(job));
+    ck_assert_uint_eq(SELECTOR_SUCCESS, selector_notify_block_job(s, fd, &job));
+    ck_assert_ptr_eq(&job, s->resolution_jobs);
+    handle_block_notifications(s);
+    ck_assert_uint_eq(1, block_count);
+    ck_assert_ptr_null(s->resolution_jobs);
+
+    // el mismo job embebido se puede reusar para otra notificación
+    ck_assert_uint_eq(SELECTOR_SUCCESS, selector_notify_block_job(s, fd, &job));
+    handle_block_notifications(s);
+    ck_assert_uint_eq(2, block_count);
+
+    // el wrapper histórico (job del heap) sigue andando
+    ck_assert_uint_eq(SELECTOR_SUCCESS, selector_notify_block(s, fd));
+    handle_block_notifications(s);
+    ck_assert_uint_eq(3, block_count);
+
+    // un embebido pendiente al destruir: el drenaje corre antes del
+    // unregister y no hace free de memoria que no es suya
+    ck_assert_uint_eq(SELECTOR_SUCCESS, selector_notify_block_job(s, fd, &job));
+    selector_destroy(s);
+    ck_assert_uint_eq(1, destroy_count);
+}
+END_TEST
+
+Suite *
 suite(void) {
     Suite *s  = suite_create("nio");
     TCase *tc = tcase_create("nio");
@@ -161,6 +218,7 @@ suite(void) {
     tcase_add_test(tc, test_ensure_capacity);
     tcase_add_test(tc, test_selector_register_fd);
     tcase_add_test(tc, test_selector_register_unregister_register);
+    tcase_add_test(tc, test_notify_block_job);
     suite_add_tcase(s, tc);
 
     return s;

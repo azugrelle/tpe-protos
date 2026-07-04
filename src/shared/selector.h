@@ -186,9 +186,54 @@ selector_select(fd_selector s);
 int
 selector_fd_set_nio(const int fd);
 
-/** notifica que un trabajo bloqueante terminó */
+/**
+ * aviso de que un trabajo bloqueante terminó, encolado para que el selector
+ * despache `handle_block' del fd dueño en el hilo principal.
+ *
+ * Normalmente lo aloca `selector_notify_block'. Un trabajo cuyo dueño vive
+ * hasta que la notificación se despacha (p.ej. una conexión que no puede
+ * morir mientras espera su resolución DNS) puede embeber el suyo y notificar
+ * con `selector_notify_block_job', que no aloca.
+ */
+struct blocking_job {
+    /** selector dueño de la resolucion */
+    fd_selector          s;
+    /** file descriptor dueño de la resolucion */
+    int                  fd;
+
+    /** datos del trabajo provisto por el usuario */
+    void                *data;
+
+    /**
+     * true si el job es del heap y el selector debe liberarlo tras
+     * despacharlo; false si está embebido en memoria del usuario.
+     */
+    bool                 heap;
+
+    /** el siguiente en la lista */
+    struct blocking_job *next;
+};
+
+/**
+ * notifica que un trabajo bloqueante terminó.
+ *
+ * Aloca el aviso: puede fallar con SELECTOR_ENOMEM, en cuyo caso la
+ * notificación nunca va a llegar. Si eso no es tolerable, usar
+ * `selector_notify_block_job' con un job pre-alocado.
+ */
 selector_status
 selector_notify_block(fd_selector s,
                  const int   fd);
+
+/**
+ * como `selector_notify_block', pero el aviso lo provee el que llama (con
+ * `heap' ya inicializado: false si está embebido) y por lo tanto no hay
+ * camino de fallo por memoria. El job debe seguir vivo hasta que el selector
+ * despache la notificación, y no debe reutilizarse antes de eso.
+ */
+selector_status
+selector_notify_block_job(fd_selector s,
+                 const int   fd,
+                 struct blocking_job *job);
 
 #endif
