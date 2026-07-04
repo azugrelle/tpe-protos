@@ -9,6 +9,8 @@ struct users
 {
     char* name;
     char* pass;
+    /** true si puede autenticarse en el servicio de monitoreo (opción -a) */
+    bool  is_admin;
 };
 
 struct socks5args

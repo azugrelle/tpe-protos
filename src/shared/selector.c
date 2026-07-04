@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
-#include <sys/signal.h>
+#include <signal.h>   // header POSIX: <sys/signal.h> no declara sigaction en macOS
 #include "selector.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))

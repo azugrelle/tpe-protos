@@ -22,10 +22,12 @@
 #include <sys/socket.h>  // socket
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>   // inet_pton
 
 // #include "socks5.h"
 #include "../shared/selector.h"
 #include "socks5nio.h"
+#include "mgmt.h"
 #include "args.h"
 #include "utils/include/user_auth_utils.h"
 
@@ -56,6 +58,8 @@ main(const int argc, char **argv) {
     const char       *err_msg = NULL;
     selector_status   ss      = SELECTOR_SUCCESS;
     fd_selector selector      = NULL;
+    // declarado (e inicializado) antes del primer goto finally, que lo cruza
+    int mng_server            = -1;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -121,6 +125,57 @@ main(const int argc, char **argv) {
         err_msg = "registering fd";
         goto finally;
     }
+
+    // socket pasivo del servicio de monitoreo (-L/-P): otro server en el
+    // mismo selector, un solo select() atiende proxy + administración.
+    struct sockaddr_in mng_addr;
+    memset(&mng_addr, 0, sizeof(mng_addr));
+    mng_addr.sin_family = AF_INET;
+    mng_addr.sin_port   = htons(args.mng_port);
+    if(inet_pton(AF_INET, args.mng_addr, &mng_addr.sin_addr) != 1) {
+        err_msg = "invalid management address (-L)";
+        goto finally;
+    }
+
+    mng_server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if(mng_server < 0) {
+        err_msg = "unable to create management socket";
+        goto finally;
+    }
+
+    fprintf(stdout, "Management listening on TCP port %d\n", args.mng_port);
+
+    setsockopt(mng_server, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int));
+
+    if(bind(mng_server, (struct sockaddr*) &mng_addr, sizeof(mng_addr)) < 0) {
+        err_msg = "unable to bind management socket";
+        goto finally;
+    }
+
+    if(listen(mng_server, 20) < 0) {
+        err_msg = "unable to listen on management socket";
+        goto finally;
+    }
+
+    if(selector_fd_set_nio(mng_server) == -1) {
+        err_msg = "getting management socket flags";
+        goto finally;
+    }
+
+    mgmt_init(&args);   // AUTH valida contra args.users[] (flag is_admin)
+
+    const struct fd_handler mgmtv = {
+        .handle_read       = mgmt_passive_accept,
+        .handle_write      = NULL,
+        .handle_close      = NULL, // nada que liberar
+    };
+    ss = selector_register(selector, mng_server, &mgmtv,
+                                                  OP_READ, NULL);
+    if(ss != SELECTOR_SUCCESS) {
+        err_msg = "registering management fd";
+        goto finally;
+    }
+
     for(;!done;) {
         err_msg = NULL;
         ss = selector_select(selector);
@@ -151,9 +206,13 @@ finally:
     selector_close();
 
     socksv5_pool_destroy();
+    mgmt_pool_destroy();
 
     if(server >= 0) {
         close(server);
+    }
+    if(mng_server >= 0) {
+        close(mng_server);
     }
     return ret;
 }

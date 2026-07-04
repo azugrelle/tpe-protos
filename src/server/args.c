@@ -1,3 +1,4 @@
+
 #include <stdio.h>     /* for printf */
 #include <stdlib.h>    /* for exit */
 #include <limits.h>    /* LONG_MIN et al */
@@ -56,6 +57,9 @@ usage(const char* progname)
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
             "\n"
+            "   -a <name>:<pass> Usuario administrador: puede usar el proxy y ademas\n"
+            "                    autenticarse en el servicio de management. Comparte\n"
+            "                    el limite de 10 usuarios con -u.\n"
             "   -h               Imprime la ayuda y termina.\n"
             "   -l <SOCKS addr>  Dirección donde servirá el proxy SOCKS.\n"
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
@@ -92,7 +96,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:Np:P:u:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "a:hl:L:Np:P:u:v", long_options, &option_index);
         if (c == -1)
             break;
 
@@ -117,6 +121,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             args->mng_port = port(optarg);
             break;
         case 'u':
+        case 'a':
             if (nusers >= MAX_USERS)
             {
                 fprintf(stderr, "maximun number of command line users reached: %d.\n", MAX_USERS);
@@ -125,6 +130,8 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             else
             {
                 user(optarg, args->users + nusers);
+                // -a es un -u que ademas habilita el acceso al monitoreo
+                args->users[nusers].is_admin = (c == 'a');
                 args->nusers++;
                 nusers++;
             }
