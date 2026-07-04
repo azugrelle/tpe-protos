@@ -19,6 +19,7 @@
 #include "states/include/state_auth.h"
 #include "states/include/state_request.h"
 #include "states/include/state_connect.h"
+#include "states/include/state_copy.h"
 
 /** cantidad máxima de estructuras `socks5' guardadas en el pool de reuso */
 static const unsigned  max_pool  = 50;
@@ -208,6 +209,13 @@ static const struct state_definition client_statbl[] = {
     {
         .state            = CONNECTING,
         .on_write_ready   = connecting,
+    },
+    {
+        // sin on_arrival: la activación del relay es copy_start (puede fallar
+        // y on_arrival no puede transicionar), llamada desde request_write.
+        .state            = COPY,
+        .on_read_ready    = copy_r,
+        .on_write_ready   = copy_w,
     },
     {
         .state            = DONE,

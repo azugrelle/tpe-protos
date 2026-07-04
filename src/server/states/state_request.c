@@ -12,6 +12,7 @@
 
 #include "include/state_request.h"
 #include "include/state_connect.h"
+#include "include/state_copy.h"
 
 /** BND.ADDR de los replies de error (0.0.0.0), único ATYP IPv4 */
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
@@ -19,6 +20,8 @@ static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
 int
 request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
               const uint8_t *bnd_addr, uint16_t bnd_port) {
+    // se recuerda el REP: al drenar REQUEST_WRITE decide relay (COPY) o cierre.
+    s->reply_rep = rep;
     return request_marshall(&s->write_buffer, rep, bnd_atyp, bnd_addr, bnd_port);
 }
 
@@ -122,7 +125,14 @@ request_write(struct selector_key *key) {
     if(buffer_can_read(d->wb)) {
         return REQUEST_WRITE;   // quedan bytes del reply por enviar
     }
-    // terminamos de enviar el reply; todavía no hay relay al origen.
+
+    // reply entregado: si fue de éxito arranca el relay; si fue de error se
+    // cierra (RFC 1928 §6). El chequeo del origin_fd es defensivo: un REP de
+    // éxito sin origen conectado no tiene relay posible.
+    struct socks5 *s = ATTACHMENT(key);
+    if(s->reply_rep == SOCKS5_REP_SUCCEEDED && s->origin_fd != -1) {
+        return copy_start(key);
+    }
     return DONE;
 }
 

@@ -22,6 +22,7 @@
 #include <netdb.h>        // addrinfo
 
 #include "buffer.h"
+#include "selector.h"
 #include "stm.h"
 
 #include "hello_parser.h"
@@ -108,7 +109,8 @@ enum socks_v5state {
      *
      * Transiciones:
      *   - REQUEST_WRITE mientras queden bytes por enviar
-     *   - DONE          cuando se envió el reply (todavía no se conecta al origen)
+     *   - COPY          si el REPLY enviado fue de éxito (arranca el relay)
+     *   - DONE          si el REPLY fue de error (RFC 1928 §6: se cierra)
      *   - ERROR         ante error de IO
      */
     REQUEST_WRITE,
@@ -126,6 +128,22 @@ enum socks_v5state {
      *   - ERROR         ante un error interno irrecuperable
      */
     CONNECTING,
+
+    /**
+     * relay bidireccional cliente↔origen: el proxy ya no inspecciona el
+     * tráfico, copia crudo en ambos sentidos sobre los buffers.
+     *
+     * Intereses (recomputados tras cada I/O — así se implementa el
+     * backpressure, sobre ambos fds):
+     *     - OP_READ  sobre un fd si su buffer destino tiene lugar
+     *     - OP_WRITE sobre un fd si su buffer fuente tiene datos
+     *
+     * Transiciones:
+     *   - COPY  mientras el relay siga activo
+     *   - DONE  cuando el relay terminó (por ahora, EOF de cualquier lado)
+     *   - ERROR ante un error de I/O real o un fallo del selector
+     */
+    COPY,
 
     // estados terminales
     DONE,
@@ -171,9 +189,22 @@ struct connecting {
     bool     had_connect_error;
 };
 
-/** usado por COPY / relay bidireccional */
+/**
+ * usado por COPY / relay bidireccional. Hay una instancia por fd (una en
+ * `client.copy', otra en `orig.copy'), cruzadas entre sí vía `other': el
+ * buffer donde un lado deposita lo que lee es el que el otro lado drena.
+ */
 struct copy {
-    int placeholder;
+    /** el fd de este lado (apunta a client_fd u origin_fd del `struct socks5') */
+    int          *fd;
+    /** buffer donde este fd deposita lo que lee (lo escribe el otro lado) */
+    buffer       *rb;
+    /** buffer del que este fd toma lo que escribe (lo llena el otro lado) */
+    buffer       *wb;
+    /** sentidos todavía activos de este lado (OP_READ y/o OP_WRITE) */
+    fd_interest   duplex;
+    /** el otro lado del relay */
+    struct copy  *other;
 };
 
 /*
@@ -200,6 +231,13 @@ struct socks5 {
     uint8_t                       dest_atyp;
     char                          dest_host[SOCKS5_FQDN_MAX_LEN];
     uint16_t                      dest_port;
+
+    /**
+     * REP del último REPLY serializado (lo deja `request_reply'). Decide la
+     * transición al drenar REQUEST_WRITE: éxito → COPY (arranca el relay),
+     * error → DONE (RFC 1928 §6: tras un reply de error se cierra).
+     */
+    uint8_t                       reply_rep;
 
     /** resolución del origin server (DNS async); se libera al destruir */
     struct addrinfo              *origin_resolution;

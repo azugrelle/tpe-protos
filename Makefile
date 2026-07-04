@@ -45,7 +45,9 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/parser_utils_test \
       $(TEST_FOLDER)/stm_test \
       $(TEST_FOLDER)/request_parser_test \
-      $(TEST_FOLDER)/state_connect_test
+      $(TEST_FOLDER)/state_connect_test \
+      $(TEST_FOLDER)/state_copy_test \
+      $(TEST_FOLDER)/state_request_test
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
@@ -87,6 +89,19 @@ $(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/re
 $(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/states/state_connect.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=connect src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
+
+# state_copy_test incluye state_copy.c inline y NO linkea selector.c (stubs
+# propios). recv()/send() se interceptan con --wrap para inyectar errno.
+$(TEST_FOLDER)/state_copy_test: src/test/state_copy_test.c src/server/states/state_copy.c src/shared/buffer.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=recv,--wrap=send src/test/state_copy_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
+
+# state_request_test incluye state_request.c inline (stubs de connect_start /
+# copy_start / selector); send() se intercepta con --wrap para forzar envíos
+# parciales del reply.
+$(TEST_FOLDER)/state_request_test: src/test/state_request_test.c src/server/states/state_request.c src/server/request_parser.c src/shared/buffer.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=send src/test/state_request_test.c src/server/request_parser.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)
