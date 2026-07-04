@@ -600,6 +600,64 @@ START_TEST (test_both_eof_with_drained_buffers_returns_done) {
 }
 END_TEST
 
+//////////////////////////////////////////////////////////////////////
+// métricas: una sola vez por byte
+
+START_TEST (test_metrics_count_relayed_bytes_once) {
+    // N bytes ida + M bytes vuelta suman N+M exacto: se cuentan en el recv;
+    // si el send también contara, daría el doble.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    const uint64_t base = metrics_get_total_bytes_transferred();
+
+    // 5 bytes cliente→origen, con su send incluido
+    ck_assert_int_eq(5, write(t.client_peer, "cinco", 5));
+    struct selector_key crkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&crkey));
+    struct selector_key owkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_w(&owkey));
+
+    // 9 bytes origen→cliente, con su send incluido
+    ck_assert_int_eq(9, write(t.origin_peer, "respuesta", 9));
+    struct selector_key orkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_r(&orkey));
+    struct selector_key cwkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_w(&cwkey));
+
+    ck_assert_uint_eq(base + 5 + 9, metrics_get_total_bytes_transferred());
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_metrics_not_counted_on_failed_recv) {
+    // un recv fallido (errno inyectado) o un EOF no suman bytes.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    const uint64_t base = metrics_get_total_bytes_transferred();
+
+    g_recv_inject_errno = EAGAIN;
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&rkey));
+
+    g_recv_inject_errno = 0;
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    ck_assert_uint_eq(COPY, copy_r(&rkey));   // EOF
+
+    ck_assert_uint_eq(base, metrics_get_total_bytes_transferred());
+
+    conn_close(&t);
+}
+END_TEST
+
 START_TEST (test_full_half_close_lifecycle) {
     // ciclo completo estilo HTTP/1.0: el cliente manda el pedido y cierra su
     // escritura; el proxy entrega pedido+FIN al origen; el origen responde y
@@ -685,6 +743,8 @@ suite(void) {
     tcase_add_test(tc, test_shutdown_wr_failure_returns_error);
     tcase_add_test(tc, test_shutdown_rd_failure_is_ignored);
     tcase_add_test(tc, test_both_eof_with_drained_buffers_returns_done);
+    tcase_add_test(tc, test_metrics_count_relayed_bytes_once);
+    tcase_add_test(tc, test_metrics_not_counted_on_failed_recv);
     tcase_add_test(tc, test_full_half_close_lifecycle);
     suite_add_tcase(s, tc);
 

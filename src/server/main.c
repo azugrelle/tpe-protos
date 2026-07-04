@@ -26,6 +26,7 @@
 
 // #include "socks5.h"
 #include "../shared/selector.h"
+#include "../shared/metrics.h"
 #include "socks5nio.h"
 #include "mgmt.h"
 #include "args.h"
@@ -50,8 +51,12 @@ main(const int argc, char **argv) {
         if (!create_user_credentials(args.users[i].name, args.users[i].pass)) {
             fprintf(stderr, "invalid user in -u argument: %s\n", args.users[i].name);
             exit(1);
-        }    
+        }
     }
+
+    // contadores volátiles del server (bytes del relay, conexiones, uptime);
+    // los alimenta el camino caliente y los lee el monitoreo (T42).
+    metrics_init();
 
     close(0);
 
@@ -207,6 +212,7 @@ finally:
 
     socksv5_pool_destroy();
     mgmt_pool_destroy();
+    metrics_free();
 
     if(server >= 0) {
         close(server);

@@ -30,6 +30,7 @@
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_copy.h"
+#include "metrics.h"
 
 /** ¿el evento vino del cliente o del origen? */
 static struct copy *
@@ -158,6 +159,9 @@ copy_r(struct selector_key *key) {
     }
 
     buffer_write_adv(d->rb, n);
+    // los bytes se cuentan una sola vez por sentido: en el recv (contarlos
+    // también al enviarlos duplicaría).
+    metrics_bytes_transferred(n);
     return copy_refresh_interests(key, d) ? COPY : ERROR;
 }
 
