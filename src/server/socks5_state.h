@@ -275,6 +275,12 @@ struct socks5 {
      * en el hilo principal.
      */
     int                           resolve_gai;
+    /**
+     * aviso de notificación de bloqueo del hilo de DNS, siempre embebido
+     * (`heap' queda en false por el memset de `socks5_new'). Hay a lo sumo
+     * una resolución en vuelo por conexión, así que se reusa.
+     */
+    struct blocking_job           resolve_job;
     /** cursor (borrowed) dentro de origin_resolution; NULL si no hay/agotado */
     struct addrinfo              *origin_resolution_current;
     /** información de la conexión con el origin server */

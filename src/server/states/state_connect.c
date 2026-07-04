@@ -1,21 +1,30 @@
 /**
- * state_connect.c -- estado CONNECTING del proxy SOCKSv5 (RFC 1928 §6).
+ * state_connect.c -- estados RESOLVING y CONNECTING del proxy SOCKSv5
+ * (RFC 1928 §6).
  *
- * Dueño de la resolución del destino (`getaddrinfo', síncrono por ahora) y de
- * la conexión no bloqueante al origen. Inserta un estado CONNECTING entre
- * REQUEST_READ y REQUEST_WRITE: `request_process' hace `return connect_start()'
- * en el camino válido, y cuando el connect termina se manda el REPLY real y se
- * pasa a REQUEST_WRITE.
+ * Dueño de la resolución del destino y de la conexión no bloqueante al
+ * origen. `request_process' hace `return connect_start()' en el camino
+ * válido; cuando el connect termina se manda el REPLY real y se pasa a
+ * REQUEST_WRITE.
  *
- * `connect_start' resuelve el destino y arranca un `connect' no bloqueante sobre
- * el origin_fd, que se registra en el selector con interés OP_WRITE; el cliente
- * queda en OP_NOOP hasta que haya REPLY. `connecting' se dispara cuando el origen
- * queda escribible: consulta SO_ERROR y, según el resultado, responde éxito,
- * prueba el siguiente candidato o responde el error.
+ * La resolución depende del ATYP: los literales IPv4/IPv6 se resuelven
+ * inline (`AI_NUMERICHOST', sin lookup de red), pero un FQDN puede demorar
+ * segundos y bloquearía el loop entero, así que corre en un hilo efímero
+ * (estado RESOLVING) que al terminar despierta al selector con la
+ * notificación de bloqueo y la conexión retoma en `resolve_done', ya en el
+ * hilo principal.
+ *
+ * Con la resolución lista, `connect_try' arranca un `connect' no bloqueante
+ * sobre el origin_fd, que se registra en el selector con interés OP_WRITE; el
+ * cliente queda en OP_NOOP hasta que haya REPLY. `connecting' se dispara
+ * cuando el origen queda escribible: consulta SO_ERROR y, según el resultado,
+ * responde éxito, prueba el siguiente candidato o responde el error.
  */
 #include <errno.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>        // snprintf
+#include <stdlib.h>       // malloc, free
 #include <string.h>       // memset, memcpy
 #include <unistd.h>       // close
 #include <netdb.h>        // getaddrinfo, AI_NUMERICHOST
@@ -61,15 +70,14 @@ gai_error_to_rep(int gai) {
 }
 
 /**
- * resuelve el destino (dest_host:dest_port) a una lista de `addrinfo' lista
- * para `connect'. Síncrono por ahora: bloquea el loop un instante. Está aislada
- * a propósito para poder moverla a un hilo más adelante sin tocar el resto.
+ * resuelve un destino literal (dest_host:dest_port, ATYP IPv4/IPv6) a una
+ * lista de `addrinfo' lista para `connect'. Es síncrono porque no bloquea:
+ * `AI_NUMERICHOST' garantiza que no hay lookup de red, solo parseo del
+ * literal. Un FQDN no pasa por acá (va al hilo de resolución) y con este
+ * hint fallaría con EAI_NONAME.
  *
  * Deja la lista en `s->origin_resolution' y el cursor en
- * `s->origin_resolution_current'. El hint de familia depende del ATYP pedido:
- * IPv4/IPv6 literales fuerzan su familia + `AI_NUMERICHOST' (sin lookup DNS);
- * un FQDN se resuelve dual-stack (`AF_UNSPEC'), ya que tanto `connect_try' como
- * el BND del reply (`connect_reply_bnd') soportan ambas familias.
+ * `s->origin_resolution_current'.
  *
  * Devuelve el código de retorno de `getaddrinfo' (0 éxito, EAI_* en error).
  */
@@ -82,17 +90,9 @@ connect_resolve(struct socks5 *s) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
-    if(s->dest_atyp == SOCKS5_ATYP_IPV4) {
-        // el host ya es un literal dotted → sin lookup DNS
-        hints.ai_family = AF_INET;
-        hints.ai_flags |= AI_NUMERICHOST;
-    } else if(s->dest_atyp == SOCKS5_ATYP_IPV6) {
-        // el host ya es un literal IPv6 → sin lookup DNS
-        hints.ai_family = AF_INET6;
-        hints.ai_flags |= AI_NUMERICHOST;
-    } else {
-        hints.ai_family = AF_UNSPEC;
-    }
+    hints.ai_flags    = AI_NUMERICHOST;
+    hints.ai_family   = (s->dest_atyp == SOCKS5_ATYP_IPV6) ? AF_INET6
+                                                           : AF_INET;
 
     s->origin_resolution = NULL;
     const int gai = getaddrinfo(s->dest_host, port_str, &hints,
@@ -249,6 +249,10 @@ connect_start(struct selector_key *key) {
 
     d->last_error        = 0;
     d->had_connect_error = false;
+    if(s->dest_atyp == SOCKS5_ATYP_DOMAIN) {
+        // un FQDN puede demorar: la resolución va a un hilo aparte.
+        return resolve_start(key);
+    }
     const int gai = connect_resolve(s);
     if(gai != 0) {
         return connect_fail(s, key->s, gai_error_to_rep(gai));
@@ -256,18 +260,110 @@ connect_start(struct selector_key *key) {
     return connect_try(key);
 }
 
+//////////////////////////////////////////////////////////////////////
+// Resolución de FQDN en un hilo efímero (estado RESOLVING).
+
 /**
- * inicia la resolución del destino FQDN. Por ahora resuelve síncrono y sigue
- * de largo (nunca se queda en RESOLVING): es el andamiaje sobre el que se
- * monta el hilo de resolución, que es quien va a dejar el resultado y
- * disparar `resolve_done' vía la notificación de bloqueo.
+ * cantidad de hilos de resolución vivos. El apagado del server la necesita
+ * en cero antes de destruir el selector y las conexiones: un hilo tardío
+ * escribiría sobre memoria liberada.
  */
+static unsigned        resolve_inflight = 0;
+static pthread_mutex_t resolve_mutex    = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  resolve_idle     = PTHREAD_COND_INITIALIZER;
+
+/**
+ * cuerpo del hilo de resolución (uno, efímero, por FQDN): corre el
+ * `getaddrinfo' bloqueante fuera del loop del selector, deja el resultado en
+ * la conexión y la despierta con la notificación de bloqueo (`resolve_done').
+ * Recibe una copia mallocada del `selector_key', que es suya y libera.
+ *
+ * No hay carrera sobre el `socks5': mientras la conexión está en RESOLVING el
+ * cliente está en OP_NOOP y el origin_fd no existe, así que ningún evento del
+ * selector puede destruirla antes de que la notificación se despache. El hilo
+ * toca solo `origin_resolution', `resolve_gai' y `resolve_job' (publicados
+ * por el mutex interno de la notificación), y lee `dest_host'/`dest_port',
+ * congelados durante el estado. El decremento del contador es la última
+ * acción: después de eso el hilo ya no toca memoria compartida.
+ */
+static void *
+resolve_thread(void *arg) {
+    struct selector_key *key = arg;
+    struct socks5       *s   = ATTACHMENT(key);
+
+    char port_str[6];   // "65535" + '\0'
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)s->dest_port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    // dual-stack: connect_try y el BND del reply soportan ambas familias
+    hints.ai_family   = AF_UNSPEC;
+
+    // en fallo getaddrinfo deja el out-param indefinido: se resuelve sobre
+    // una local y solo se publica una lista real (liberable).
+    struct addrinfo *res = NULL;
+    const int gai = getaddrinfo(s->dest_host, port_str, &hints, &res);
+    if(gai == 0) {
+        s->origin_resolution = res;
+    }
+    s->resolve_gai = gai;
+
+    selector_notify_block_job(key->s, key->fd, &s->resolve_job);
+    free(key);
+
+    pthread_mutex_lock(&resolve_mutex);
+    resolve_inflight--;
+    pthread_cond_signal(&resolve_idle);
+    pthread_mutex_unlock(&resolve_mutex);
+    return NULL;
+}
+
+/** inicia la resolución del destino FQDN en un hilo aparte */
 unsigned
 resolve_start(struct selector_key *key) {
     struct socks5 *s = ATTACHMENT(key);
 
-    s->resolve_gai = connect_resolve(s);
-    return resolve_done(key);
+    s->origin_resolution         = NULL;
+    s->origin_resolution_current = NULL;
+    // primero OP_NOOP: fija el invariante de RESOLVING (nada puede matar la
+    // conexión mientras el hilo corre) antes de que el hilo exista.
+    if(selector_set_interest(key->s, s->client_fd, OP_NOOP)
+       != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+
+    struct selector_key *key_copy = malloc(sizeof(*key_copy));
+    if(key_copy == NULL) {
+        return connect_fail(s, key->s, SOCKS5_REP_GENERAL_FAILURE);
+    }
+    *key_copy = *key;
+
+    // detached por atributo: no hay ventana joinable ni un pthread_detach
+    // posterior cuyo fallo habría que manejar.
+    pthread_attr_t attr;
+    if(pthread_attr_init(&attr) != 0) {
+        free(key_copy);
+        return connect_fail(s, key->s, SOCKS5_REP_GENERAL_FAILURE);
+    }
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+    pthread_mutex_lock(&resolve_mutex);
+    resolve_inflight++;
+    pthread_mutex_unlock(&resolve_mutex);
+
+    pthread_t tid;
+    const int err = pthread_create(&tid, &attr, resolve_thread, key_copy);
+    pthread_attr_destroy(&attr);
+    if(err != 0) {
+        pthread_mutex_lock(&resolve_mutex);
+        resolve_inflight--;
+        pthread_mutex_unlock(&resolve_mutex);
+        free(key_copy);
+        return connect_fail(s, key->s, SOCKS5_REP_GENERAL_FAILURE);
+    }
+    return RESOLVING;
 }
 
 /**

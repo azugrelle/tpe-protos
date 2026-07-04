@@ -22,6 +22,9 @@ static uint8_t g_reply_rep         = 0;  // último REP serializado
 static bool    g_inject            = false;  // habilita el script de connect()
 static int     g_connect_calls     = 0;
 static int     g_connect_fail_until = 0;  // connect() falla mientras call <= este
+static int     g_notify_calls      = 0;   // notificaciones de bloqueo
+static int     g_notify_fd         = -1;  // fd de la última notificación
+static struct blocking_job *g_notify_job = NULL;
 
 static void
 reset_injection(void) {
@@ -33,6 +36,9 @@ reset_injection(void) {
     g_inject             = false;
     g_connect_calls      = 0;
     g_connect_fail_until = 0;
+    g_notify_calls       = 0;
+    g_notify_fd          = -1;
+    g_notify_job         = NULL;
 }
 
 int
@@ -79,6 +85,16 @@ __wrap_connect(int fd, const struct sockaddr *addr, socklen_t len) {
 selector_status
 selector_unregister_fd(fd_selector s, const int fd) {
     (void)s; (void)fd;
+    return SELECTOR_SUCCESS;
+}
+
+selector_status
+selector_notify_block_job(fd_selector s, const int fd,
+                          struct blocking_job *job) {
+    (void)s;
+    g_notify_calls++;
+    g_notify_fd  = fd;
+    g_notify_job = job;
     return SELECTOR_SUCCESS;
 }
 
