@@ -96,7 +96,9 @@ enum socks_v5state {
      *
      * Transiciones:
      *   - REQUEST_READ  mientras el mensaje no esté completo
-     *   - REQUEST_WRITE cuando se parseó el pedido (para responder el reply)
+     *   - RESOLVING     pedido válido con FQDN (la resolución va a un hilo)
+     *   - CONNECTING    pedido válido con IP literal (connect en vuelo)
+     *   - REQUEST_WRITE pedido inválido o fallo inmediato (REPLY de error listo)
      *   - ERROR         ante error de IO
      */
     REQUEST_READ,
@@ -114,6 +116,24 @@ enum socks_v5state {
      *   - ERROR         ante error de IO
      */
     REQUEST_WRITE,
+
+    /**
+     * espera el resultado de la resolución DNS del destino (FQDN), que corre
+     * en un hilo aparte para no bloquear el loop del selector.
+     *
+     * Intereses:
+     *     - OP_NOOP sobre client_fd (no hay I/O que esperar: la salida del
+     *       estado es la notificación de bloqueo, no un evento de fd)
+     *     - origin_fd todavía no existe
+     *
+     * Transiciones (desde on_block_ready, en el hilo principal):
+     *   - RESOLVING     mientras el hilo de resolución no notifique
+     *   - CONNECTING    la resolución tuvo éxito y hay un connect en vuelo
+     *   - REQUEST_WRITE la resolución (o todos los candidatos) falló y el
+     *                   REPLY de error quedó listo
+     *   - ERROR         ante un error interno irrecuperable
+     */
+    RESOLVING,
 
     /**
      * espera a que termine el `connect' no bloqueante al origin server.
@@ -243,8 +263,18 @@ struct socks5 {
      */
     uint8_t                       reply_rep;
 
-    /** resolución del origin server (DNS async); se libera al destruir */
+    /**
+     * resolución del destino, lista para `connect'. Para un FQDN la deja el
+     * hilo de DNS antes de notificar (RESOLVING); para literales la deja
+     * `connect_resolve' inline. Se libera al destruir.
+     */
     struct addrinfo              *origin_resolution;
+    /**
+     * rc del `getaddrinfo' corrido en el hilo de DNS (0 éxito, EAI_* en
+     * error). Lo escribe el hilo antes de notificar; lo lee `resolve_done'
+     * en el hilo principal.
+     */
+    int                           resolve_gai;
     /** cursor (borrowed) dentro de origin_resolution; NULL si no hay/agotado */
     struct addrinfo              *origin_resolution_current;
     /** información de la conexión con el origin server */

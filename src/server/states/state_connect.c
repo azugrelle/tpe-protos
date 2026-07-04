@@ -257,6 +257,37 @@ connect_start(struct selector_key *key) {
 }
 
 /**
+ * inicia la resolución del destino FQDN. Por ahora resuelve síncrono y sigue
+ * de largo (nunca se queda en RESOLVING): es el andamiaje sobre el que se
+ * monta el hilo de resolución, que es quien va a dejar el resultado y
+ * disparar `resolve_done' vía la notificación de bloqueo.
+ */
+unsigned
+resolve_start(struct selector_key *key) {
+    struct socks5 *s = ATTACHMENT(key);
+
+    s->resolve_gai = connect_resolve(s);
+    return resolve_done(key);
+}
+
+/**
+ * on_block_ready de RESOLVING (sobre client_fd): la resolución terminó y el
+ * resultado está en `resolve_gai' / `origin_resolution'. En éxito posiciona
+ * el cursor de candidatos y sigue con el connect no bloqueante; en fallo
+ * responde el REPLY de error (EAI_* → REP vía `gai_error_to_rep').
+ */
+unsigned
+resolve_done(struct selector_key *key) {
+    struct socks5 *s = ATTACHMENT(key);
+
+    if(s->resolve_gai != 0) {
+        return connect_fail(s, key->s, gai_error_to_rep(s->resolve_gai));
+    }
+    s->origin_resolution_current = s->origin_resolution;
+    return connect_try(key);
+}
+
+/**
  * completa el BND del reply de éxito con la dirección local del origin_fd
  * (getsockname, RFC 1928 §6): es el endpoint que el kernel le asignó al socket
  * de origen, no el peer remoto. Devuelve ATYP IPv4 o IPv6 según la familia real

@@ -207,6 +207,12 @@ static const struct state_definition client_statbl[] = {
         .on_write_ready   = request_write,
     },
     {
+        // sin on_arrival por el mismo motivo que CONNECTING: la iniciación
+        // (resolve_start) puede fallar y on_arrival no puede transicionar.
+        .state            = RESOLVING,
+        .on_block_ready   = resolve_done,
+    },
+    {
         .state            = CONNECTING,
         .on_write_ready   = connecting,
     },
