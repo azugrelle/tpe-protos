@@ -18,8 +18,13 @@
  * son únicos por conexión): `copy_ptr' resuelve de qué lado vino el evento y
  * el resto del código es simétrico.
  *
- * Por ahora un EOF de cualquier lado termina la conexión completa (DONE); el
- * half-close (shutdown diferido, un sentido sobrevive al otro) llega después.
+ * Half-close: un EOF apaga solo ese sentido (`duplex &= ~OP_READ'); el otro
+ * sigue copiando (ej.: el cliente cerró su escritura pero el origen sigue
+ * mandando la respuesta). El FIN se propaga con `shutdown(SHUT_WR)' al otro
+ * fd recién cuando su buffer se vació —diferido, para no perder bytes en
+ * vuelo— y a lo sumo una vez (guardado por el bit de `duplex'). La conexión
+ * termina (DONE) cuando ambos `duplex' quedan en OP_NOOP: los dos sentidos
+ * vieron EOF y no queda nada por escribir.
  */
 #include <errno.h>
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
@@ -60,6 +65,29 @@ static bool
 copy_refresh_interests(struct selector_key *key, struct copy *d) {
     return copy_compute_interests(key->s, d)        == SELECTOR_SUCCESS
         && copy_compute_interests(key->s, d->other) == SELECTOR_SUCCESS;
+}
+
+/**
+ * propaga el fin de un sentido: apaga OP_WRITE del lado `d' y señaliza el FIN
+ * a su peer con `shutdown(SHUT_WR)'. El bit de `duplex' se limpia antes de
+ * llamar y hace de guarda: el shutdown se emite a lo sumo una vez, y solo con
+ * el buffer fuente ya drenado (lo garantizan los llamadores). Devuelve false
+ * ante un fallo real del shutdown: sin FIN el peer nunca ve fin de stream,
+ * mejor teardown explícito.
+ */
+static bool
+copy_shutdown_wr(struct copy *d) {
+    if(!(d->duplex & OP_WRITE)) {
+        return true;   // ya propagado
+    }
+    d->duplex &= ~OP_WRITE;
+    return shutdown(*d->fd, SHUT_WR) == 0;
+}
+
+/** ¿terminaron ambos sentidos? (EOF de los dos lados y nada por escribir) */
+static bool
+copy_finished(struct copy *d) {
+    return d->duplex == OP_NOOP && d->other->duplex == OP_NOOP;
 }
 
 unsigned
@@ -114,8 +142,19 @@ copy_r(struct selector_key *key) {
         return ERROR;
     }
     if(n == 0) {
-        // EOF: por ahora cierra la conexión completa (half-close después).
-        return DONE;
+        // EOF: terminó el sentido que entra por este fd. Ya no se lee más de
+        // acá (el kernel descarta lo que llegue tras el SHUT_RD, best-effort).
+        d->duplex &= ~OP_READ;
+        shutdown(key->fd, SHUT_RD);
+        // si no quedan bytes en vuelo de este sentido, el FIN se propaga ya;
+        // si quedan, lo propaga el copy_w del otro lado al drenarlos.
+        if(!buffer_can_read(d->rb) && !copy_shutdown_wr(d->other)) {
+            return ERROR;
+        }
+        if(copy_finished(d)) {
+            return DONE;
+        }
+        return copy_refresh_interests(key, d) ? COPY : ERROR;
     }
 
     buffer_write_adv(d->rb, n);
@@ -145,5 +184,15 @@ copy_w(struct selector_key *key) {
     }
 
     buffer_read_adv(d->wb, n);
+    // si este era el último tramo de un sentido que ya vio EOF (el lado que
+    // alimenta este buffer perdió OP_READ), acá se propaga el FIN diferido.
+    if(!buffer_can_read(d->wb) && !(d->other->duplex & OP_READ)) {
+        if(!copy_shutdown_wr(d)) {
+            return ERROR;
+        }
+        if(copy_finished(d)) {
+            return DONE;
+        }
+    }
     return copy_refresh_interests(key, d) ? COPY : ERROR;
 }

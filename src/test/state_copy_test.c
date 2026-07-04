@@ -9,7 +9,8 @@
 // se incluye el .c para poder probar sus funciones estáticas
 // (copy_compute_interests) sin linkear selector.c: los símbolos externos que
 // referencia el módulo se satisfacen con stubs propios (abajo). recv/send se
-// interceptan con --wrap para inyectar errno sin depender del kernel.
+// interceptan con --wrap para inyectar errno sin depender del kernel, y
+// shutdown para contar propagaciones del FIN e inyectar sus fallos.
 #include "states/state_copy.c"
 
 //////////////////////////////////////////////////////////////////////
@@ -26,6 +27,10 @@ static int         g_recv_calls            = 0;
 static int         g_recv_inject_errno     = 0;   // recv devuelve -1 con este errno; 0 = real
 static int         g_send_calls            = 0;
 static int         g_send_inject_errno     = 0;   // send devuelve -1 con este errno; 0 = real
+static int         g_shutdown_rd_calls     = 0;
+static int         g_shutdown_wr_calls     = 0;
+static bool        g_shutdown_rd_fail      = false;
+static bool        g_shutdown_wr_fail      = false;
 
 static void
 reset_injection(void) {
@@ -36,6 +41,10 @@ reset_injection(void) {
     g_recv_inject_errno     = 0;
     g_send_calls            = 0;
     g_send_inject_errno     = 0;
+    g_shutdown_rd_calls     = 0;
+    g_shutdown_wr_calls     = 0;
+    g_shutdown_rd_fail      = false;
+    g_shutdown_wr_fail      = false;
 }
 
 selector_status
@@ -74,6 +83,26 @@ __wrap_send(int fd, const void *buf, size_t len, int flags) {
         return -1;
     }
     return __real_send(fd, buf, len, flags);
+}
+
+extern int __real_shutdown(int fd, int how);
+
+int
+__wrap_shutdown(int fd, int how) {
+    if(how == SHUT_RD) {
+        g_shutdown_rd_calls++;
+        if(g_shutdown_rd_fail) {
+            errno = ENOTCONN;
+            return -1;
+        }
+    } else if(how == SHUT_WR) {
+        g_shutdown_wr_calls++;
+        if(g_shutdown_wr_fail) {
+            errno = ENOTCONN;
+            return -1;
+        }
+    }
+    return __real_shutdown(fd, how);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -419,8 +448,13 @@ START_TEST (test_fatal_errno_returns_error) {
 }
 END_TEST
 
-START_TEST (test_eof_returns_done) {
-    // política del paso 1: EOF de cualquier lado cierra la conexión completa.
+//////////////////////////////////////////////////////////////////////
+// half-close: un sentido sobrevive al otro, FIN diferido e idempotente
+
+START_TEST (test_half_close_keeps_other_direction_alive) {
+    // el cliente cierra su escritura pero el origen sigue mandando: el estado
+    // sigue en COPY, el FIN se propaga al origen (sin bytes en vuelo) y la
+    // respuesta del origen sigue llegando al cliente.
     struct test_conn t;
     conn_init(&t);
     struct selector_key key = key_for(&t, t.s.client_fd);
@@ -428,8 +462,182 @@ START_TEST (test_eof_returns_done) {
     ck_assert_uint_eq(COPY, copy_start(&key));
 
     ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    g_shutdown_wr_calls = 0;   // descontar el shutdown del propio test
     struct selector_key rkey = key_for(&t, t.s.client_fd);
-    ck_assert_uint_eq(DONE, copy_r(&rkey));
+    ck_assert_uint_eq(COPY, copy_r(&rkey));
+
+    // el FIN llegó al peer del origen (EOF inmediato, no había bytes en vuelo)
+    ck_assert_int_eq(1, g_shutdown_wr_calls);
+    char got[16];
+    ck_assert_int_eq(0, read(t.origin_peer, got, sizeof(got)));
+
+    // el sentido origen→cliente sigue vivo
+    ck_assert_int_eq(4, write(t.origin_peer, "pong", 4));
+    struct selector_key orkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_r(&orkey));
+    struct selector_key cwkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_w(&cwkey));
+    ck_assert_int_eq(4, read(t.client_peer, got, sizeof(got)));
+    ck_assert_int_eq(0, memcmp("pong", got, 4));
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_deferred_shutdown_flushes_in_flight_bytes) {
+    // EOF del cliente con bytes todavía en read_buffer: el origen tiene que
+    // recibir esos bytes ANTES del FIN (shutdown diferido al drenar).
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(4, write(t.client_peer, "tail", 4));
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    g_shutdown_wr_calls = 0;
+
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&rkey));   // lee "tail"
+    ck_assert_uint_eq(COPY, copy_r(&rkey));   // ve el EOF
+    // hay bytes en vuelo: el FIN quedó pendiente
+    ck_assert_int_eq(0, g_shutdown_wr_calls);
+
+    // el drenado hacia el origen dispara el FIN diferido
+    struct selector_key wkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_w(&wkey));
+    ck_assert_int_eq(1, g_shutdown_wr_calls);
+
+    // el peer del origen ve los datos completos y recién después el EOF
+    char got[16];
+    ck_assert_int_eq(4, read(t.origin_peer, got, sizeof(got)));
+    ck_assert_int_eq(0, memcmp("tail", got, 4));
+    ck_assert_int_eq(0, read(t.origin_peer, got, sizeof(got)));
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_shutdown_wr_emitted_at_most_once) {
+    // un segundo evento de EOF (espurio) no debe repetir el shutdown(SHUT_WR):
+    // el bit de duplex hace de guarda.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    g_shutdown_wr_calls = 0;
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&rkey));
+    ck_assert_uint_eq(COPY, copy_r(&rkey));   // EOF espurio repetido
+
+    ck_assert_int_eq(1, g_shutdown_wr_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_shutdown_wr_failure_returns_error) {
+    // sin FIN el peer nunca ve fin de stream: un fallo real de SHUT_WR es
+    // teardown explícito.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    g_shutdown_wr_fail = true;
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(ERROR, copy_r(&rkey));
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_shutdown_rd_failure_is_ignored) {
+    // SHUT_RD es best-effort: su fallo no tira la conexión.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    g_shutdown_rd_fail = true;
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&rkey));
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_both_eof_with_drained_buffers_returns_done) {
+    // fin total: EOF de ambos lados con buffers vacíos ⇒ DONE, con un FIN
+    // propagado a cada fd (duplex de ambos lados en OP_NOOP).
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    ck_assert_int_eq(0, shutdown(t.origin_peer, SHUT_WR));
+    g_shutdown_wr_calls = 0;
+
+    struct selector_key crkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&crkey));   // primer EOF: half-close
+    struct selector_key orkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(DONE, copy_r(&orkey));   // segundo EOF: fin total
+
+    ck_assert_int_eq(2, g_shutdown_wr_calls);  // un FIN por fd
+    ck_assert_uint_eq(OP_NOOP, t.s.client.copy.duplex);
+    ck_assert_uint_eq(OP_NOOP, t.s.orig.copy.duplex);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_full_half_close_lifecycle) {
+    // ciclo completo estilo HTTP/1.0: el cliente manda el pedido y cierra su
+    // escritura; el proxy entrega pedido+FIN al origen; el origen responde y
+    // cierra; el cliente recibe la respuesta completa y la conexión termina.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    // cliente: pedido + half-close
+    ck_assert_int_eq(3, write(t.client_peer, "GET", 3));
+    ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
+    struct selector_key crkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&crkey));   // lee "GET"
+    ck_assert_uint_eq(COPY, copy_r(&crkey));   // EOF (FIN diferido: hay bytes)
+
+    // el origen recibe pedido + FIN
+    struct selector_key owkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_w(&owkey));
+    char got[16];
+    ck_assert_int_eq(3, read(t.origin_peer, got, sizeof(got)));
+    ck_assert_int_eq(0, memcmp("GET", got, 3));
+    ck_assert_int_eq(0, read(t.origin_peer, got, sizeof(got)));
+
+    // el origen responde y cierra
+    ck_assert_int_eq(2, write(t.origin_peer, "OK", 2));
+    ck_assert_int_eq(0, shutdown(t.origin_peer, SHUT_WR));
+    struct selector_key orkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_r(&orkey));   // lee "OK"
+    ck_assert_uint_eq(COPY, copy_r(&orkey));   // EOF (FIN diferido: hay bytes)
+
+    // el cliente recibe la respuesta completa; drenar cierra todo
+    struct selector_key cwkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(DONE, copy_w(&cwkey));
+    ck_assert_int_eq(2, read(t.client_peer, got, sizeof(got)));
+    ck_assert_int_eq(0, memcmp("OK", got, 2));
+    ck_assert_int_eq(0, read(t.client_peer, got, sizeof(got)));
 
     conn_close(&t);
 }
@@ -470,8 +678,14 @@ suite(void) {
     tcase_add_test(tc, test_nonfatal_recv_errnos_stay_in_copy);
     tcase_add_test(tc, test_nonfatal_send_errnos_stay_in_copy);
     tcase_add_test(tc, test_fatal_errno_returns_error);
-    tcase_add_test(tc, test_eof_returns_done);
     tcase_add_test(tc, test_recompute_failure_after_io_returns_error);
+    tcase_add_test(tc, test_half_close_keeps_other_direction_alive);
+    tcase_add_test(tc, test_deferred_shutdown_flushes_in_flight_bytes);
+    tcase_add_test(tc, test_shutdown_wr_emitted_at_most_once);
+    tcase_add_test(tc, test_shutdown_wr_failure_returns_error);
+    tcase_add_test(tc, test_shutdown_rd_failure_is_ignored);
+    tcase_add_test(tc, test_both_eof_with_drained_buffers_returns_done);
+    tcase_add_test(tc, test_full_half_close_lifecycle);
     suite_add_tcase(s, tc);
 
     return s;

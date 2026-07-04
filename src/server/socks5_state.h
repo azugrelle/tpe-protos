@@ -138,9 +138,13 @@ enum socks_v5state {
      *     - OP_READ  sobre un fd si su buffer destino tiene lugar
      *     - OP_WRITE sobre un fd si su buffer fuente tiene datos
      *
+     * Soporta half-close: un EOF apaga solo ese sentido y el otro sigue
+     * copiando; el FIN se propaga (shutdown SHUT_WR) al drenar los bytes en
+     * vuelo.
+     *
      * Transiciones:
-     *   - COPY  mientras el relay siga activo
-     *   - DONE  cuando el relay terminó (por ahora, EOF de cualquier lado)
+     *   - COPY  mientras algún sentido siga activo
+     *   - DONE  cuando ambos sentidos vieron EOF y los buffers se vaciaron
      *   - ERROR ante un error de I/O real o un fallo del selector
      */
     COPY,

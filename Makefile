@@ -91,10 +91,11 @@ $(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/stat
 	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=connect src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
 
 # state_copy_test incluye state_copy.c inline y NO linkea selector.c (stubs
-# propios). recv()/send() se interceptan con --wrap para inyectar errno.
+# propios). recv()/send() se interceptan con --wrap para inyectar errno, y
+# shutdown() para contar propagaciones del FIN e inyectar sus fallos.
 $(TEST_FOLDER)/state_copy_test: src/test/state_copy_test.c src/server/states/state_copy.c src/shared/buffer.c
 	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=recv,--wrap=send src/test/state_copy_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=recv,--wrap=send,--wrap=shutdown src/test/state_copy_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
 # state_request_test incluye state_request.c inline (stubs de connect_start /
 # copy_start / selector); send() se intercepta con --wrap para forzar envíos
