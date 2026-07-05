@@ -69,10 +69,10 @@ errors="$(grep -oE "ERROR SUMMARY: [0-9]+ errors" "$LOG" | grep -vE ": 0 errors"
 summary="$(grep -c "ERROR SUMMARY:" "$LOG")"
 
 # con --error-exitcode=99, valgrind devuelve 99 SOLO si encontro errores; el
-# resto es la salida normal del server (1 tras un SIGTERM). Los FILE
-# DESCRIPTORS del resumen son informativos, no parte del veredicto: siempre
-# figura el fd del --log-file de valgrind, y el teardown no cierra los fds de
-# las conexiones aun vivas al SIGTERM (pendiente de robustez).
+# resto es la salida normal del server (0: el SIGTERM drena y sale solo cuando
+# el driver suelta los relays). Los FILE DESCRIPTORS del resumen son
+# informativos aca: el que los audita como parte del veredicto es
+# leak_shutdown_teardown.sh.
 if [ "$vg_status" -ne 99 ] && [ "$summary" -eq 1 ] && [ -z "$leaks" ] \
    && [ -z "$errors" ]; then
     echo "OK: sin fugas"

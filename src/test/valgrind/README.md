@@ -17,9 +17,9 @@ le manda `SIGTERM` al server: el teardown debe liberar cada `addrinfo`.
 Sale con código `0` si no hay fugas ni errores de memoria, `1` si valgrind
 reporta errores/fugas, `2` si falta valgrind, falla el build o el escenario no
 llega a establecerse. Los descriptores abiertos al exit se imprimen a título
-informativo (siempre figura el fd del `--log-file` de valgrind, y el teardown
-no cierra los fds de conexiones aún vivas al SIGTERM — pendiente de
-robustez): no son parte del veredicto. Usa `driver_connecting.py` como generador de
+informativo (siempre figura el fd del `--log-file` de valgrind): acá no son
+parte del veredicto — el que los audita de verdad es
+`leak_shutdown_teardown.sh`. Usa `driver_connecting.py` como generador de
 carga (se le puede pasar puerto y cantidad de conexiones).
 
 ## `leak_copy_teardown.sh`
@@ -78,6 +78,31 @@ liberar aparece como `definitely lost`.
 
 ```sh
 ./src/test/valgrind/leak_multiip_teardown.sh
+```
+
+Mismos códigos de salida que los anteriores.
+
+## `leak_shutdown_teardown.sh`
+
+Audita el **apagado ordenado** en sus dos caminos, con una mezcla de
+conexiones vivas armada por `driver_shutdown.py`: varias en pleno `COPY`, una
+a medio HELLO, una sesión de monitoreo sostenida y (en el caso de drenado) una
+en `RESOLVING` con el shim de DNS lento precargado:
+
+- **drenado (1 señal):** el server cierra pasivos y handshakes, la resolución
+  tardía se cierra al notificar, y cuando el driver suelta las `COPY` el
+  proceso sale **solo** con `exit 0`.
+- **corte forzado (2 señales):** con las `COPY` y la sesión de mgmt aún vivas,
+  la segunda señal corta ya, también con `exit 0`.
+
+A diferencia de los otros `leak_*`, acá los `FILE DESCRIPTORS` **sí son parte
+del veredicto**: el teardown cierra los fds de toda conexión viva (los cierra
+el `handle_close` al desregistrar), así que al salir solo pueden quedar los
+std y el fd del `--log-file` de valgrind. También se exige que el exit code
+sea 0 en ambos caminos (apagado pedido ≠ error).
+
+```sh
+./src/test/valgrind/leak_shutdown_teardown.sh
 ```
 
 Mismos códigos de salida que los anteriores.

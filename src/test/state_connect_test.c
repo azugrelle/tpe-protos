@@ -90,9 +90,7 @@ script_connect_ok(void) {
     g_setinterest_fail   = false;
     g_reply_calls        = 0;
     g_reply_rep          = 0;
-    g_inject             = false;
     g_connect_calls      = 0;
-    g_connect_fail_until = 0;
     g_metrics_calls      = 0;
     g_metrics_success    = false;
     g_metrics_username[0] = '\0';
@@ -659,7 +657,7 @@ START_TEST (test_connecting_success_logs_access_and_replies) {
     socklen_t ll = sizeof(la);
     ck_assert_int_eq(0, getsockname(lfd, (struct sockaddr *)&la, &ll));
 
-    reset_injection();   // g_inject queda en false: __wrap_connect delega al real
+    reset_injection();   // sin guion de connect: __wrap_connect delega al real
 
     int cfd = socket(AF_INET, SOCK_STREAM, 0);
     ck_assert_int_ge(cfd, 0);
@@ -1078,13 +1076,10 @@ suite(void) {
     tcase_add_test(tc, test_register_failure_replies_general_failure);
     tcase_add_test(tc, test_setinterest_failure_returns_error);
     tcase_add_test(tc, test_getsockopt_failure_returns_error);
-<<<<<<< HEAD
     tcase_add_test(tc, test_connecting_soerror_retries_next_candidate);
     tcase_add_test(tc, test_connecting_soerror_last_candidate_replies_error);
     tcase_add_test(tc, test_connecting_success_replies_succeeded);
-=======
     tcase_add_test(tc, test_connecting_success_logs_access_and_replies);
->>>>>>> 3b68131 (access log por usuario)
     tcase_add_test(tc, test_errno_to_rep);
     tcase_add_test(tc, test_gai_error_to_rep);
     tcase_add_test(tc, test_resolve_done_error_replies_host_unreachable);

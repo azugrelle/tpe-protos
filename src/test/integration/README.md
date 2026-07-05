@@ -49,6 +49,29 @@ dinámicos, espera de listen, timeouts y cleanup. Sale `0` si ambos casos
 pasan, `1` si el fallback no anduvo o el REP fue otro, `2` por dependencias o
 build.
 
+## `shutdown_drain.sh`
+
+Valida el apagado ordenado ante señales de terminación. Baja el archivo de 5MB
+con `curl --limit-rate` (para que la transferencia dure varios segundos y haya
+ventana para señalar en el medio) y cubre los dos caminos:
+
+1. **drenado**: `SIGTERM` a mitad de transferencia → el proxy rechaza
+   conexiones nuevas (los pasivos ya cerraron) pero la transferencia en curso
+   termina íntegra (`sha256sum` igual al original), y el proceso sale solo con
+   `exit 0` apenas queda sin conexiones vivas.
+2. **corte forzado**: una 2ª `SIGTERM` a mitad de drenado → la transferencia
+   se corta ya (no llega completa) y el proxy igual sale con `exit 0`.
+
+```sh
+./src/test/integration/shutdown_drain.sh
+```
+
+Mismas garantías que `relay_integrity.sh`: recompila el server, puertos
+dinámicos, espera de listen, timeouts (incluida una cota para "el proxy debe
+salir solo") y cleanup. Sale `0` si ambos casos pasan, `1` si el drenado
+cortó la transferencia, aceptó conexiones nuevas, no salió solo o devolvió un
+exit code distinto de 0, `2` por dependencias o build.
+
 ## `multiip_shim.c`
 
 Shim de `getaddrinfo`/`freeaddrinfo` que fabrica las listas multi-IP del test
