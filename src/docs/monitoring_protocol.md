@@ -85,9 +85,9 @@ Si la lista está vacía:
 
 | Comando | Sintaxis | Respuesta |
 |---|---|---|
-| `STATS` | `STATS` | multilínea: `historical_connections: N`, `concurrent_connections: N`, `max_concurrent: N`, `bytes_transferred: N`, `uptime: N` (segundos) |
-| `USERS` | `USERS` | multilínea: una línea por usuario |
-| `CONNECTIONS` | `CONNECTIONS` | multilínea: una línea por conexión activa, ej. `alice 192.168.1.5:54321 -> example.com:80`. Si el proxy negoció método no-auth (sin usuario asociado), el campo `<user>` se reporta como `anonymous` |
+| `STATS` | `STATS` | multilínea: `historical_connections: N`, `concurrent_connections: N`, `max_concurrent: N`, `active_users: N`, `bytes_transferred: N`, `uptime: N` (segundos) |
+| `USERS` | `USERS` | multilínea: una línea por usuario **activo** (conectado ahora), solo el nombre — nunca contraseñas |
+| `CONNECTIONS` | `CONNECTIONS` | multilínea: conteos agregados `current_connections: N` y `max_concurrent: N`. No hay detalle por conexión (origen/destino): exigiría registrar esos datos por conexión activa en el camino del relay; ver el registro de decisiones |
 | `CONFIG` | `CONFIG <param> <valor>` | `+OK` / `-ERR unknown param` / `-ERR invalid value` |
 | `ADD_USER` | `ADD_USER <user> <pass>` | `+OK` / `-ERR user exists` / `-ERR user table full` |
 | `DEL_USER` | `DEL_USER <user>` | `+OK` / `-ERR user not found` / `-ERR cannot delete last admin` |
@@ -138,6 +138,7 @@ S: +OK
 historical_connections: 42
 concurrent_connections: 3
 max_concurrent: 10
+active_users: 2
 bytes_transferred: 198234
 uptime: 3601
 .

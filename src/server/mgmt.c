@@ -11,8 +11,11 @@
  * consultando el estado actual. Separarlos en archivos como los state_*.c del
  * proxy sería ceremonia sin contenido.
  */
+#include <inttypes.h> // PRIu64
+#include <stdarg.h>   // va_list
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>    // vsnprintf
 #include <stdlib.h>   // malloc
 #include <string.h>   // memset, strchr, strcmp
 #include <unistd.h>   // close
@@ -21,6 +24,7 @@
 
 #include "buffer.h"
 #include "stm.h"
+#include "metrics.h"
 #include "include/mgmt.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
@@ -28,15 +32,28 @@
 /** máximo de una línea de comando, contando el '\n' final (el contenido útil
  *  puede ocupar hasta MGMT_MAX_LINE - 1 bytes) */
 #define MGMT_MAX_LINE          512
-/** tamaño de los buffers crudos de I/O de la sesión */
-#define MGMT_BUFFER_SIZE       1024
+/** tamaño del buffer crudo de lectura de la sesión */
+#define MGMT_READ_BUFFER_SIZE  1024
 /**
  * espacio que exigimos libre en el write buffer ANTES de despachar una línea:
- * garantiza que la respuesta de una línea siempre entra entera (la más larga
- * de T32 es "-ERR already authenticated\n" = 27 bytes). Si no hay lugar, el
- * parseo se pausa (backpressure) en vez de truncar respuestas.
+ * garantiza que la respuesta entra siempre ENTERA, incluidas las multilínea.
+ * La más grande posible es USERS con la tabla de usuarios llena: "+OK\n" +
+ * MAX_USERS nombres de hasta 255 bytes con su '\n' (= MAX_USERNAME_LEN cada
+ * uno) + ".\n" final. Si no hay lugar, el parseo se pausa (backpressure) en
+ * vez de truncar respuestas, y mgmt_cmd_write lo retoma al drenar.
+ *
+ * Reservar el peor caso evita tener que emitir listas "resumibles" (pausar a
+ * mitad de una multilínea y recordar por dónde íbamos): acá el peor caso es
+ * chico y acotado, así que se paga con buffer y no con maquinaria. Un comando
+ * futuro con listas NO acotadas (el registro de accesos) va a necesitar
+ * revisar este esquema.
  */
-#define MGMT_RESPONSE_RESERVE  64
+#define MGMT_RESPONSE_RESERVE  (4 + MAX_USERS * MAX_USERNAME_LEN + 2)
+/**
+ * tamaño del buffer crudo de escritura: el peor caso de una respuesta más
+ * margen para las respuestas anteriores todavía no drenadas por el cliente.
+ */
+#define MGMT_WRITE_BUFFER_SIZE 4096
 
 /** máquina de estados de una sesión de administración */
 enum mgmt_state {
@@ -102,8 +119,8 @@ struct mgmt_session {
     bool                     closing;
 
     /** buffers crudos y sus vistas para I/O */
-    uint8_t                  raw_buff_read[MGMT_BUFFER_SIZE];
-    uint8_t                  raw_buff_write[MGMT_BUFFER_SIZE];
+    uint8_t                  raw_buff_read[MGMT_READ_BUFFER_SIZE];
+    uint8_t                  raw_buff_write[MGMT_WRITE_BUFFER_SIZE];
     buffer                   read_buffer, write_buffer;
 
     /** siguiente en el pool de reuso */
@@ -219,7 +236,28 @@ mgmt_queue_line(struct mgmt_session *s, const char *msg) {
     buffer_write_adv(&s->write_buffer, (ssize_t)(len + 1));
 }
 
-/** true si el write buffer garantiza lugar para la respuesta de una línea */
+/**
+ * variante printf de mgmt_queue_line, para las líneas `campo: valor' de las
+ * respuestas multilínea. El buffer local alcanza para el campo más largo con
+ * un uint64_t completo (20 dígitos); vsnprintf trunca si algún día no.
+ */
+static void
+mgmt_queue_linef(struct mgmt_session *s, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void
+mgmt_queue_linef(struct mgmt_session *s, const char *fmt, ...) {
+    char line[64];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    mgmt_queue_line(s, line);
+}
+
+/** true si el write buffer garantiza lugar para una respuesta completa
+ *  (incluso la multilínea más grande; ver MGMT_RESPONSE_RESERVE) */
 static bool
 mgmt_can_respond(struct mgmt_session *s) {
     size_t space;
@@ -326,6 +364,92 @@ cmd_quit(struct selector_key *key, unsigned state, char *args) {
 }
 
 /**
+ * STATS -- fotografía de las métricas globales, en formato multilínea:
+ * `+OK', una línea `campo: valor' por métrica, y el `.' final. Solo lee
+ * (la foto es coherente porque todo corre en el hilo del selector).
+ */
+static unsigned
+cmd_stats(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    if(args != NULL) {
+        // STATS no lleva argumentos; el error es SIEMPRE de una sola línea,
+        // nunca se empieza la multilínea
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    metrics_snapshot snap;
+    metrics_get_snapshot(&snap);
+
+    mgmt_queue_line(s, "+OK");
+    mgmt_queue_linef(s, "historical_connections: %" PRIu64, snap.historical_connections);
+    mgmt_queue_linef(s, "concurrent_connections: %" PRIu64, snap.concurrent_connections);
+    mgmt_queue_linef(s, "max_concurrent: %" PRIu64, snap.max_concurrent);
+    mgmt_queue_linef(s, "active_users: %d", metrics_get_user_count());
+    mgmt_queue_linef(s, "bytes_transferred: %" PRIu64, snap.bytes_transferred);
+    mgmt_queue_linef(s, "uptime: %" PRIu64, snap.uptime_seconds);
+    mgmt_queue_line(s, ".");
+    return state;
+}
+
+/**
+ * USERS -- lista multilínea de los usuarios activos ahora (conectados al
+ * proxy). Solo el nombre: las contraseñas jamás salen por este canal.
+ */
+static unsigned
+cmd_users(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    if(args != NULL) {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    // los activos son siempre un subconjunto de la tabla de usuarios de args,
+    // así que MAX_USERS acota la copia; si metrics reportara más (no
+    // debería), se trunca para no exceder el espacio que garantizó
+    // MGMT_RESPONSE_RESERVE antes del despacho
+    user_info users[MAX_USERS];
+    int count = metrics_get_user_count();
+    if(count > MAX_USERS) {
+        count = MAX_USERS;
+    }
+    metrics_get_users(users, count);
+
+    mgmt_queue_line(s, "+OK");   // lista vacía = `+OK' y `.' sin líneas
+    for(int i = 0; i < count; i++) {
+        mgmt_queue_line(s, users[i].username);
+    }
+    mgmt_queue_line(s, ".");
+    return state;
+}
+
+/**
+ * CONNECTIONS -- conteos agregados de conexiones del proxy, multilínea. No
+ * hay detalle por conexión (origen/destino): metrics no registra esos datos
+ * de las conexiones activas y mantenerlos tocaría el camino del relay; el
+ * conteo actual y el pico alcanzan para monitorear la carga.
+ */
+static unsigned
+cmd_connections(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    if(args != NULL) {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    mgmt_queue_line(s, "+OK");
+    mgmt_queue_linef(s, "current_connections: %" PRIu64,
+                     metrics_get_current_connections());
+    mgmt_queue_linef(s, "max_concurrent: %" PRIu64,
+                     metrics_get_max_concurrent_connections());
+    mgmt_queue_line(s, ".");
+    return state;
+}
+
+/**
  * stub para los comandos cuya lógica llega en tareas posteriores: el nombre
  * ya se reconoce (y exige autenticación) pero todavía no hacen nada. La
  * validación de argumentos de cada uno también llega con su implementación.
@@ -340,10 +464,9 @@ cmd_not_implemented(struct selector_key *key, unsigned state, char *args) {
 static const struct mgmt_cmd mgmt_commands[] = {
     { .name = "AUTH",        .requires_auth = false, .handler = cmd_auth            },
     { .name = "QUIT",        .requires_auth = false, .handler = cmd_quit            },
-    // TODO(T42): STATS/USERS/CONNECTIONS -- métricas y listados de solo lectura
-    { .name = "STATS",       .requires_auth = true,  .handler = cmd_not_implemented },
-    { .name = "USERS",       .requires_auth = true,  .handler = cmd_not_implemented },
-    { .name = "CONNECTIONS", .requires_auth = true,  .handler = cmd_not_implemented },
+    { .name = "STATS",       .requires_auth = true,  .handler = cmd_stats           },
+    { .name = "USERS",       .requires_auth = true,  .handler = cmd_users           },
+    { .name = "CONNECTIONS", .requires_auth = true,  .handler = cmd_connections     },
     // TODO(T53): CONFIG -- configuración de parámetros en runtime
     { .name = "CONFIG",      .requires_auth = true,  .handler = cmd_not_implemented },
     // TODO(T70): ADD_USER/DEL_USER -- alta y baja de usuarios del proxy
