@@ -48,6 +48,8 @@ main(const int argc, char **argv) {
 
     parse_args(argc, argv, &args);
 
+    // contadores volátiles del server (bytes del relay, conexiones, uptime);
+    // los alimenta el camino caliente y los lee el monitoreo.
     metrics_init();
 
     for (int i=0; i < args.nusers; i++) {
@@ -56,10 +58,6 @@ main(const int argc, char **argv) {
             exit(1);
         }
     }
-
-    // contadores volátiles del server (bytes del relay, conexiones, uptime);
-    // los alimenta el camino caliente y los lee el monitoreo (T42).
-    metrics_init();
 
     close(0);
 
