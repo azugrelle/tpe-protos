@@ -1,6 +1,7 @@
 #include "metrics.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /*
  * Estado global de métricas. Único, sin locks: todo el camino caliente corre en
@@ -16,7 +17,7 @@ static time_t   server_start_time = 0;
 /*
  * Modelo de usuarios:
  *  - all_time_users: fuente de verdad. Un entry por usuario distinto visto desde
- *    el arranque. Es DUEÑO de sites_visited (alimenta ACCESS_LOG de T71).
+ *    el arranque. Es DUEÑO de sites_visited (alimenta ACCESS_LOG).
  *  - active_users: subconjunto conectado ahora. Copia superficial de
  *    username/last_seen; NO es dueño de sites (evita doble free). Se maneja como
  *    conjunto de usernames únicos: varias conexiones del mismo usuario no
@@ -290,4 +291,34 @@ metrics_get_snapshot(metrics_snapshot *out) {
     out->max_concurrent = max_concurrent_connections;
     out->bytes_transferred = total_bytes_transferred;
     out->uptime_seconds = (uint64_t)(time(NULL) - server_start_time);
+}
+
+int
+metrics_get_access_log(const char *username, char out[][ACCESS_LOG_LINE_LEN], int max) {
+    if (out == NULL || max <= 0) {
+        return 0;
+    }
+    const bool filter = (username != NULL && username[0] != '\0');
+
+    int n = 0;
+    for (int i = 0; i < all_time_count && n < max; i++) {
+        const user_info *u = &all_time_users[i];
+        if (filter && strncmp(u->username, username, MAX_USERNAME_LEN) != 0) {
+            continue;
+        }
+        for (int j = 0; j < u->site_count && n < max; j++) {
+            const site_visit *v = &u->sites_visited[j];
+
+            struct tm tm_utc;
+            gmtime_r(&v->timestamp, &tm_utc);
+            char ts[sizeof("YYYY-MM-DDThh:mm:ssZ")];
+            strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+
+            snprintf(out[n], ACCESS_LOG_LINE_LEN, "%s %s:%s %s %s",
+                     u->username, v->destination_host, v->destination_port,
+                     ts, v->success ? "SUCCESS" : "FAIL");
+            n++;
+        }
+    }
+    return n;
 }

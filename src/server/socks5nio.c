@@ -50,6 +50,11 @@ socks5_new(int client_fd) {
     ret->client_fd       = client_fd;
     ret->client_addr_len = sizeof(ret->client_addr);
 
+    // hasta que AUTH_WRITE confirme credenciales, la conexión es anónima
+    // (también el valor final si el cliente eligió no-auth).
+    strncpy(ret->username, "anonymous", sizeof(ret->username) - 1);
+    ret->username[sizeof(ret->username) - 1] = '\0';
+
     ret->stm.initial     = HELLO_READ;
     ret->stm.max_state   = ERROR;
     ret->stm.states      = socks5_describe_states();

@@ -2,6 +2,7 @@
  * state_auth.c -- handler de estados AUTH_READ / AUTH_WRITE del proxy SOCKSv5.
  */
 #include <stdint.h>
+#include <string.h>       // strncpy
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_auth.h"
@@ -21,11 +22,18 @@ auth_read_init(const unsigned state, struct selector_key *key) {
 
 /** valida las credenciales recibidas y arma la respuesta del subnegotiation */
 static unsigned
-auth_process(struct auth_st *d) {
-    unsigned ret = AUTH_WRITE;
+auth_process(struct selector_key *key) {
+    struct socks5  *s   = ATTACHMENT(key);
+    struct auth_st *d   = &s->client.auth;
+    unsigned        ret = AUTH_WRITE;
 
     d->status = check_if_valid_credentials((const char *) d->parser.username,
                                             (const char *) d->parser.password);
+    if(d->status == SOCKS_AUTH_STATUS_SUCCESS) {
+        // queda disponible para el resto de la conexión (p. ej. ACCESS_LOG).
+        strncpy(s->username, (const char *) d->parser.username, sizeof(s->username) - 1);
+        s->username[sizeof(s->username) - 1] = '\0';
+    }
     if(-1 == auth_marshall(d->wb, d->status)) {
         ret = ERROR;
     }
@@ -49,7 +57,7 @@ auth_read(struct selector_key *key) {
         const enum auth_state st = auth_consume(d->rb, &d->parser, &error);
         if(auth_is_done(st, 0)) {
             if(SELECTOR_SUCCESS == selector_set_interest_key(key, OP_WRITE)) {
-                ret = auth_process(d);
+                ret = auth_process(key);
             } else {
                 ret = ERROR;
             }

@@ -31,7 +31,10 @@
 #define MAX_PORT_LEN 6
 #define MAX_CONNECTIONS 511
 
-/** Un sitio visitado por un usuario (para ACCESS_LOG de T71). */
+/** largo máximo de una línea de ACCESS_LOG formateada (ver metrics_get_access_log) */
+#define ACCESS_LOG_LINE_LEN 600
+
+/** Un sitio visitado por un usuario (para ACCESS_LOG). */
 typedef struct {
     char *destination_host;
     char *destination_port;
@@ -105,5 +108,17 @@ void metrics_get_all_time_users(user_info *out, int max);
 
 /** Completa out con la fotografía global (comando STATS). */
 void metrics_get_snapshot(metrics_snapshot *out);
+
+/**
+ * Arma líneas de ACCESS_LOG ("<user> <domain>:<port> <timestamp> <status>",
+ * timestamp ISO8601 UTC), opcionalmente filtradas por username (NULL o ""
+ * = todos los usuarios). Devuelve la cantidad de líneas escritas en out
+ * (hasta max). Pensada para que la consuma el futuro handler del comando
+ * ACCESS_LOG sin conocer la estructura interna de este módulo.
+ *
+ * Nota: las líneas salen agrupadas por usuario (orden cronológico dentro de
+ * cada usuario, no globalmente entre usuarios).
+ */
+int metrics_get_access_log(const char *username, char out[][ACCESS_LOG_LINE_LEN], int max);
 
 #endif

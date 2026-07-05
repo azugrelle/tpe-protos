@@ -36,6 +36,13 @@
 #include "include/state_request.h"   // request_reply
 #include "request_parser.h"          // SOCKS5_ATYP_IPV4, SOCKS5_REP_*
 #include "socks5nio.h"               // socks5_handler_ref
+#include "metrics.h"                 // metrics_add_user_site (ACCESS_LOG, T71)
+
+/** vuelca dest_port a texto para metrics_add_user_site (que espera char*) */
+static void
+dest_port_str(uint16_t port, char out[MAX_PORT_LEN]) {
+    snprintf(out, MAX_PORT_LEN, "%u", (unsigned)port);
+}
 
 /** BND.ADDR de los replies mientras no hay BND real (0.0.0.0) */
 static const uint8_t bnd_addr_none[4] = {0, 0, 0, 0};
@@ -153,6 +160,11 @@ static unsigned
 connect_fail(struct socks5 *s, fd_selector sel, uint8_t rep) {
     connect_clear_active_addr(s);
     connect_free_resolution(s);
+
+    char port_str[MAX_PORT_LEN];
+    dest_port_str(s->dest_port, port_str);
+    metrics_add_user_site(s->username, s->dest_host, port_str, false);
+
     if(request_reply(s, rep, SOCKS5_ATYP_IPV4, bnd_addr_none, 0) < 0) {
         return ERROR;
     }
@@ -451,6 +463,11 @@ connecting(struct selector_key *key) {
             return ERROR;
         }
         connect_free_resolution(s);
+
+        char port_str[MAX_PORT_LEN];
+        dest_port_str(s->dest_port, port_str);
+        metrics_add_user_site(s->username, s->dest_host, port_str, true);
+
         uint8_t  bnd_atyp;
         uint8_t  bnd_addr[16];
         uint16_t bnd_port;

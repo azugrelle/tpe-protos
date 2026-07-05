@@ -48,6 +48,14 @@ static int     g_setinterest_last  = -1;  // último interés pedido al selector
 static int     g_pthread_mode      = 0;   // 0 real, 1 falla, 2 éxito sin hilo
 static void   *g_pthread_arg       = NULL; // arg capturado en modo 2
 
+// spy de metrics_add_user_site (ACCESS_LOG): state_connect.c la llama en
+// connect_fail y en el camino de éxito de connecting; no se linkea metrics.c acá.
+static int     g_metrics_calls     = 0;
+static bool    g_metrics_success   = false;
+static char    g_metrics_username[MAX_USERNAME_LEN];
+static char    g_metrics_site[MAX_HOSTNAME_LEN];
+static char    g_metrics_port[MAX_PORT_LEN];
+
 static void
 reset_injection(void) {
     g_register_calls      = 0;
@@ -77,6 +85,28 @@ static void
 script_connect_ok(void) {
     g_connect_script[0]  = (struct call_script){ .rc = 0, .err = 0 };
     g_connect_script_len = 1;
+    g_register_calls     = 0;
+    g_register_fail      = false;
+    g_setinterest_fail   = false;
+    g_reply_calls        = 0;
+    g_reply_rep          = 0;
+    g_inject             = false;
+    g_connect_calls      = 0;
+    g_connect_fail_until = 0;
+    g_metrics_calls      = 0;
+    g_metrics_success    = false;
+    g_metrics_username[0] = '\0';
+    g_metrics_site[0]     = '\0';
+    g_metrics_port[0]     = '\0';
+}
+
+void
+metrics_add_user_site(const char *username, char *site, char *port, bool success) {
+    g_metrics_calls++;
+    g_metrics_success = success;
+    strncpy(g_metrics_username, username, sizeof(g_metrics_username) - 1);
+    strncpy(g_metrics_site, site, sizeof(g_metrics_site) - 1);
+    strncpy(g_metrics_port, port, sizeof(g_metrics_port) - 1);
 }
 
 int
@@ -597,6 +627,59 @@ START_TEST (test_register_failure_replies_general_failure) {
     ck_assert_int_eq(1, g_reply_calls);
     ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, g_reply_rep);
     ck_assert_ptr_null(s.origin_resolution);     // connect_fail liberó la lista
+
+    // connect_fail registró el acceso fallido (ACCESS_LOG)
+    ck_assert_int_eq(1, g_metrics_calls);
+    ck_assert(!g_metrics_success);
+    ck_assert_str_eq("127.0.0.1", g_metrics_site);
+    ck_assert_str_eq("1111", g_metrics_port);
+}
+END_TEST
+
+START_TEST (test_connecting_success_logs_access_and_replies) {
+    // connect() no bloqueante ya completó con éxito (SO_ERROR==0): connecting()
+    // arma el REPLY de éxito, registra el acceso (ACCESS_LOG) y pasa a
+    // REQUEST_WRITE.
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    ck_assert_int_ge(lfd, 0);
+    struct sockaddr_in la;
+    memset(&la, 0, sizeof(la));
+    la.sin_family      = AF_INET;
+    la.sin_addr.s_addr = inet_addr("127.0.0.1");
+    la.sin_port        = 0;   // puerto efímero
+    ck_assert_int_eq(0, bind(lfd, (struct sockaddr *)&la, sizeof(la)));
+    ck_assert_int_eq(0, listen(lfd, 1));
+    socklen_t ll = sizeof(la);
+    ck_assert_int_eq(0, getsockname(lfd, (struct sockaddr *)&la, &ll));
+
+    reset_injection();   // g_inject queda en false: __wrap_connect delega al real
+
+    int cfd = socket(AF_INET, SOCK_STREAM, 0);
+    ck_assert_int_ge(cfd, 0);
+    ck_assert_int_eq(0, connect(cfd, (struct sockaddr *)&la, sizeof(la)));
+
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_IPV4, "example.com", 80);
+    strcpy(s.username, "alice");
+    s.client_fd = 100;
+    s.origin_fd = cfd;
+
+    struct selector_key key = { .s = NULL, .fd = cfd, .data = &s };
+
+    unsigned st = connecting(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCEEDED, g_reply_rep);
+
+    ck_assert_int_eq(1, g_metrics_calls);
+    ck_assert(g_metrics_success);
+    ck_assert_str_eq("alice", g_metrics_username);
+    ck_assert_str_eq("example.com", g_metrics_site);
+    ck_assert_str_eq("80", g_metrics_port);
+
+    close(cfd);
+    close(lfd);
 }
 END_TEST
 
@@ -988,9 +1071,13 @@ suite(void) {
     tcase_add_test(tc, test_register_failure_replies_general_failure);
     tcase_add_test(tc, test_setinterest_failure_returns_error);
     tcase_add_test(tc, test_getsockopt_failure_returns_error);
+<<<<<<< HEAD
     tcase_add_test(tc, test_connecting_soerror_retries_next_candidate);
     tcase_add_test(tc, test_connecting_soerror_last_candidate_replies_error);
     tcase_add_test(tc, test_connecting_success_replies_succeeded);
+=======
+    tcase_add_test(tc, test_connecting_success_logs_access_and_replies);
+>>>>>>> 3b68131 (access log por usuario)
     tcase_add_test(tc, test_errno_to_rep);
     tcase_add_test(tc, test_gai_error_to_rep);
     tcase_add_test(tc, test_resolve_done_error_replies_host_unreachable);

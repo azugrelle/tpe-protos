@@ -48,6 +48,8 @@ main(const int argc, char **argv) {
 
     parse_args(argc, argv, &args);
 
+    metrics_init();
+
     for (int i=0; i < args.nusers; i++) {
         if (!create_user_credentials(args.users[i].name, args.users[i].pass)) {
             fprintf(stderr, "invalid user in -u argument: %s\n", args.users[i].name);

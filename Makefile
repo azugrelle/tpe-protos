@@ -46,8 +46,12 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/stm_test \
       $(TEST_FOLDER)/request_parser_test \
       $(TEST_FOLDER)/state_connect_test \
+<<<<<<< HEAD
       $(TEST_FOLDER)/state_copy_test \
       $(TEST_FOLDER)/state_request_test
+=======
+      $(TEST_FOLDER)/metrics_test
+>>>>>>> 3b68131 (access log por usuario)
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
@@ -107,6 +111,11 @@ $(TEST_FOLDER)/state_copy_test: src/test/state_copy_test.c src/server/states/sta
 $(TEST_FOLDER)/state_request_test: src/test/state_request_test.c src/server/states/state_request.c src/server/request_parser.c src/shared/buffer.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=send src/test/state_request_test.c src/server/request_parser.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
+
+# metrics_test incluye metrics.c inline
+$(TEST_FOLDER)/metrics_test: src/test/metrics_test.c src/shared/metrics.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) src/test/metrics_test.c $(CHECK_FLAGS) -o $@
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)
