@@ -62,7 +62,7 @@ main(const int argc, char **argv) {
     metrics_init();
 
     for (int i=0; i < args.nusers; i++) {
-        if (!create_user_credentials(args.users[i].name, args.users[i].pass)) {
+        if (!create_user_credentials(args.users[i].name, args.users[i].pass, args.users[i].is_admin)) {
             fprintf(stderr, "invalid user in -u argument: %s\n", args.users[i].name);
             exit(1);
         }
@@ -206,8 +206,6 @@ main(const int argc, char **argv) {
         err_msg = "getting management socket flags";
         goto finally;
     }
-
-    mgmt_init(&args);   // AUTH valida contra args.users[] (flag is_admin)
 
     const struct fd_handler mgmtv = {
         .handle_read       = mgmt_passive_accept,

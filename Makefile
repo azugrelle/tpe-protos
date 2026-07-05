@@ -48,7 +48,8 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/state_connect_test \
       $(TEST_FOLDER)/state_copy_test \
       $(TEST_FOLDER)/state_request_test \
-      $(TEST_FOLDER)/metrics_test
+      $(TEST_FOLDER)/metrics_test \
+      $(TEST_FOLDER)/hashmap_user_auth_test
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
@@ -113,6 +114,11 @@ $(TEST_FOLDER)/state_request_test: src/test/state_request_test.c src/server/stat
 $(TEST_FOLDER)/metrics_test: src/test/metrics_test.c src/shared/metrics.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) src/test/metrics_test.c $(CHECK_FLAGS) -o $@
+
+# hashmap_user_auth_test incluye hashmap.c y user_auth_utils.c inline
+$(TEST_FOLDER)/hashmap_user_auth_test: src/test/hashmap_user_auth_test.c src/server/utils/hashmap.c src/server/utils/user_auth_utils.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) src/test/hashmap_user_auth_test.c $(CHECK_FLAGS) -o $@
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)

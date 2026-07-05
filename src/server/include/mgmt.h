@@ -12,16 +12,6 @@
  */
 
 #include "selector.h"
-#include "args.h"
-
-/**
- * guarda la referencia a los argumentos del programa: AUTH valida contra la
- * tabla users[] (solo entradas con is_admin). Llamar una vez antes de aceptar
- * conexiones; `args' debe sobrevivir toda la ejecución (vive en el frame de
- * main).
- */
-void
-mgmt_init(const struct socks5args *args);
 
 /** handler de aceptación de una nueva conexión entrante al monitoreo */
 void

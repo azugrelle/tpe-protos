@@ -27,6 +27,7 @@
 #include "config.h"
 #include "metrics.h"
 #include "include/mgmt.h"
+#include "utils/include/user_auth_utils.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
 
@@ -130,14 +131,6 @@ struct mgmt_session {
 
 /** obtiene el struct (mgmt_session *) desde la llave de selección */
 #define MGMT_ATTACHMENT(key) ((struct mgmt_session *)(key)->data)
-
-/** tabla de usuarios (de args) contra la que valida AUTH; ver mgmt_init */
-static const struct socks5args *mgmt_args = NULL;
-
-void
-mgmt_init(const struct socks5args *args) {
-    mgmt_args = args;
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Pool de sesiones (mismo esquema que socks5nio.c)
@@ -326,20 +319,11 @@ cmd_auth(struct selector_key *key, unsigned state, char *args) {
         return state;
     }
 
-    // scan lineal sobre la tabla de args (≤ MAX_USERS entradas): solo
-    // usuarios con is_admin pueden entrar; un usuario común del proxy con
+    // valida contra la misma tabla que consulta el auth SOCKS y que tocan
+    // ADD_USER/DEL_USER: un usuario común del proxy (sin is_admin) con
     // credenciales correctas recibe el mismo error que uno inexistente (no
     // filtramos información sobre qué usuarios existen).
-    bool ok = false;
-    if(mgmt_args != NULL) {
-        for(int i = 0; i < mgmt_args->nusers && !ok; i++) {
-            const struct users *u = &mgmt_args->users[i];
-            ok = u->is_admin
-              && strcmp(u->name, args) == 0    // case-sensitive
-              && strcmp(u->pass, pass) == 0;
-        }
-    }
-    if(ok) {
+    if(check_if_valid_admin_credentials(args, pass) == 0x00) {
         mgmt_queue_line(s, "+OK authenticated");
         return MGMT_AUTH;
     }
@@ -541,6 +525,62 @@ cmd_not_implemented(struct selector_key *key, unsigned state, char *args) {
     return state;
 }
 
+/** ADD_USER <user> <pass> -- alta de usuario en runtime (T70) */
+static unsigned
+cmd_add_user(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    // mismo split que AUTH: user hasta el primer espacio, pass el resto
+    // crudo (puede contener espacios).
+    char *pass = (args == NULL) ? NULL : strchr(args, ' ');
+    if(pass == NULL || args[0] == '\0') {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+    *pass++ = '\0';
+
+    switch(add_user_credentials(args, pass)) {
+    case USER_ADD_OK:
+        mgmt_queue_line(s, "+OK");
+        break;
+    case USER_ADD_EXISTS:
+        mgmt_queue_line(s, "-ERR user exists");
+        break;
+    case USER_ADD_FULL:
+        mgmt_queue_line(s, "-ERR user table full");
+        break;
+    case USER_ADD_INVALID:
+    default:
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        break;
+    }
+    return state;
+}
+
+/** DEL_USER <user> -- baja de usuario en runtime (T70) */
+static unsigned
+cmd_del_user(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    if(args == NULL || args[0] == '\0') {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    switch(delete_user_credentials(args)) {
+    case USER_DEL_OK:
+        mgmt_queue_line(s, "+OK");
+        break;
+    case USER_DEL_NOT_FOUND:
+        mgmt_queue_line(s, "-ERR user not found");
+        break;
+    case USER_DEL_LAST_ADMIN:
+        mgmt_queue_line(s, "-ERR cannot delete last admin");
+        break;
+    }
+    return state;
+}
+
 static const struct mgmt_cmd mgmt_commands[] = {
     { .name = "AUTH",        .requires_auth = false, .handler = cmd_auth            },
     { .name = "QUIT",        .requires_auth = false, .handler = cmd_quit            },
@@ -548,10 +588,8 @@ static const struct mgmt_cmd mgmt_commands[] = {
     { .name = "USERS",       .requires_auth = true,  .handler = cmd_users           },
     { .name = "CONNECTIONS", .requires_auth = true,  .handler = cmd_connections     },
     { .name = "CONFIG",      .requires_auth = true,  .handler = cmd_config          },
-    // TODO(T70): ADD_USER/DEL_USER -- alta y baja de usuarios del proxy
     { .name = "ADD_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
     { .name = "DEL_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
-    // TODO(T71): ACCESS_LOG -- consulta del registro de accesos
     { .name = "ACCESS_LOG",  .requires_auth = true,  .handler = cmd_not_implemented },
 };
 

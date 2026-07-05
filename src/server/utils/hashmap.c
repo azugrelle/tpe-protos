@@ -81,7 +81,7 @@ const static_entry *hashmap_get(const hashmap_t *map, const char *key) {
     return NULL;
 }
 
-int hashmap_insert(hashmap_t *map, const char * key, const char * value) {
+int hashmap_insert(hashmap_t *map, const char * key, const char * value, int is_admin) {
     unsigned long hash = _hash(key);
     size_t position = hash % map->capacity;
     size_t probes = 0;
@@ -97,6 +97,7 @@ int hashmap_insert(hashmap_t *map, const char * key, const char * value) {
         strncpy(map->entries[position].value, value, ENTRY_LENGTH - 1);
         map->entries[position].value[ENTRY_LENGTH - 1] = '\0';
         map->entries[position].present = 1;
+        map->entries[position].is_admin = is_admin;
         map->size++;
         return 1;
     }
@@ -105,5 +106,56 @@ int hashmap_insert(hashmap_t *map, const char * key, const char * value) {
     if (rehash(map, map->capacity * 2) == NULL) {
         return 0;
     }
-    return hashmap_insert(map, key, value);
+    return hashmap_insert(map, key, value, is_admin);
+}
+
+/**
+ * backward-shift deletion para linear probing: no alcanza con marcar el slot
+ * borrado como libre, porque hashmap_get/hashmap_insert cortan el probing en
+ * el primer slot libre que encuentran. Si se abriera un hueco a mitad de un
+ * cluster, las entradas que quedan después (mismo cluster, posición de
+ * inserción más lejana) quedarían inalcanzables. El algoritmo reubica cada
+ * entrada del resto del cluster un paso atrás si su posición ideal ya no
+ * necesita el slot que se está liberando.
+ */
+int hashmap_delete(hashmap_t *map, const char *key) {
+    unsigned long hash = _hash(key);
+    size_t position = hash % map->capacity;
+    size_t probes = 0;
+
+    while (probes < map->capacity && map->entries[position].present) {
+        if (strcmp(map->entries[position].key, key) == 0) {
+            break;
+        }
+        position = (position + 1) % map->capacity;
+        probes++;
+    }
+    if (probes >= map->capacity || !map->entries[position].present) {
+        return 0;
+    }
+
+    map->entries[position].present = 0;
+    map->size--;
+
+    size_t hole = position;
+    size_t scan = (hole + 1) % map->capacity;
+    while (map->entries[scan].present) {
+        size_t ideal = _hash(map->entries[scan].key) % map->capacity;
+        // ¿la posición ideal de `scan' cae fuera del rango (hole, scan] (circular)?
+        // si es así, mover `scan' al hueco es seguro: su probing seguirá
+        // encontrandolo antes de llegar a un slot libre.
+        int should_move;
+        if (hole <= scan) {
+            should_move = ideal <= hole || ideal > scan;
+        } else {
+            should_move = ideal <= hole && ideal > scan;
+        }
+        if (should_move) {
+            map->entries[hole] = map->entries[scan];
+            map->entries[scan].present = 0;
+            hole = scan;
+        }
+        scan = (scan + 1) % map->capacity;
+    }
+    return 1;
 }

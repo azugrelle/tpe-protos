@@ -1,3 +1,6 @@
+#ifndef HASHMAP_H_wN3rT8kLpQ2xVb6mYcJ0hFa4ZsD7Ru9E
+#define HASHMAP_H_wN3rT8kLpQ2xVb6mYcJ0hFa4ZsD7Ru9E
+
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +11,7 @@ typedef struct static_entry {
     char key[ENTRY_LENGTH];     // name
     char value[ENTRY_LENGTH];   // pass
     int present;
+    int is_admin;
 } static_entry;
 
 typedef struct hashmap {
@@ -20,5 +24,10 @@ typedef struct hashmap {
 hashmap_t *hashmap_create(size_t capacity);
 void hashmap_destroy(hashmap_t *map);
 const static_entry *hashmap_get(const hashmap_t *map, const char *key);
-int hashmap_insert(hashmap_t *map, const char * key, const char * value);
+int hashmap_insert(hashmap_t *map, const char * key, const char * value, int is_admin);
+/** borra una entrada preservando el probing lineal del resto del cluster.
+ *  Retorna 1 si se borró, 0 si la key no estaba. */
+int hashmap_delete(hashmap_t *map, const char *key);
+
+#endif
 
