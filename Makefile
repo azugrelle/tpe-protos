@@ -85,10 +85,11 @@ $(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/re
 
 # state_connect_test incluye state_connect.c inline y NO linkea selector.c: el
 # harness satisface con stubs propios los símbolos externos del módulo. Se
-# intercepta connect() con --wrap para poder scriptear el reintento de candidatos.
+# interceptan con --wrap connect() (scriptear el reintento de candidatos) y
+# pthread_create() (forzar su fallo y correr el worker de DNS sincrónicamente).
 $(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/states/state_connect.c
 	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=connect src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=connect,--wrap=pthread_create src/test/state_connect_test.c $(CHECK_FLAGS) -o $@
 
 # state_copy_test incluye state_copy.c inline y NO linkea selector.c (stubs
 # propios); buffer.c y metrics.c se linkean reales. recv()/send() se

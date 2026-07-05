@@ -25,6 +25,9 @@ static int     g_connect_fail_until = 0;  // connect() falla mientras call <= es
 static int     g_notify_calls      = 0;   // notificaciones de bloqueo
 static int     g_notify_fd         = -1;  // fd de la última notificación
 static struct blocking_job *g_notify_job = NULL;
+static int     g_setinterest_last  = -1;  // último interés pedido al selector
+static int     g_pthread_mode      = 0;   // 0 real, 1 falla, 2 éxito sin hilo
+static void   *g_pthread_arg       = NULL; // arg capturado en modo 2
 
 static void
 reset_injection(void) {
@@ -39,6 +42,9 @@ reset_injection(void) {
     g_notify_calls       = 0;
     g_notify_fd          = -1;
     g_notify_job         = NULL;
+    g_setinterest_last   = -1;
+    g_pthread_mode       = 0;
+    g_pthread_arg        = NULL;
 }
 
 int
@@ -52,7 +58,8 @@ request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
 
 selector_status
 selector_set_interest(fd_selector s, int fd, fd_interest i) {
-    (void)s; (void)fd; (void)i;
+    (void)s; (void)fd;
+    g_setinterest_last = (int)i;
     return g_setinterest_fail ? SELECTOR_IO : SELECTOR_SUCCESS;
 }
 
@@ -86,6 +93,22 @@ selector_status
 selector_unregister_fd(fd_selector s, const int fd) {
     (void)s; (void)fd;
     return SELECTOR_SUCCESS;
+}
+
+// pthread_create se intercepta con --wrap: por defecto delega en el real;
+// modo 1 falla (recurso agotado) y modo 2 devuelve éxito capturando el arg
+// SIN crear el hilo, para poder correr resolve_thread sincrónicamente.
+extern int __real_pthread_create(pthread_t *t, const pthread_attr_t *a,
+                                 void *(*f)(void *), void *arg);
+
+int
+__wrap_pthread_create(pthread_t *t, const pthread_attr_t *a,
+                      void *(*f)(void *), void *arg) {
+    switch(g_pthread_mode) {
+        case 1:  return EAGAIN;
+        case 2:  g_pthread_arg = arg; return 0;
+        default: return __real_pthread_create(t, a, f, arg);
+    }
 }
 
 selector_status
@@ -409,6 +432,168 @@ START_TEST (test_gai_error_to_rep) {
 }
 END_TEST
 
+START_TEST (test_resolve_done_error_replies_host_unreachable) {
+    // la resolución del hilo falló: REPLY 0x04 y el cliente pasa a OP_WRITE
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_DOMAIN, "no-resuelve.example", 80);
+    s.client_fd   = 100;
+    s.origin_fd   = -1;
+    s.resolve_gai = EAI_NONAME;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    ck_assert_uint_eq(REQUEST_WRITE, resolve_done(&key));
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, g_reply_rep);
+    ck_assert_int_eq(OP_WRITE, g_setinterest_last);
+    ck_assert_ptr_null(s.origin_resolution);
+    ck_assert_ptr_null(s.origin_resolution_current);
+}
+END_TEST
+
+START_TEST (test_resolve_done_success_goes_connecting) {
+    // resolución exitosa: resolve_done posiciona el cursor y termina en
+    // CONNECTING vía connect_try (connect scripteado como activo de entrada).
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_IPV4, "127.0.0.1", 1111);
+    ck_assert_int_eq(0, connect_resolve(&s));   // lista real (liberable)
+    s.client_fd   = 100;
+    s.origin_fd   = -1;
+    s.references  = 1;
+    s.resolve_gai = 0;
+    // resolve_done debe reposicionarlo, como queda tras el hilo
+    s.origin_resolution_current = NULL;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_inject = true; g_connect_fail_until = 0;
+    ck_assert_uint_eq(CONNECTING, resolve_done(&key));
+    ck_assert_ptr_eq(s.origin_resolution, s.origin_resolution_current);
+    ck_assert_uint_eq(2, s.references);
+    ck_assert_int_ne(-1, s.origin_fd);
+
+    close(s.origin_fd);
+    freeaddrinfo(s.origin_resolution);
+}
+END_TEST
+
+START_TEST (test_resolve_thread_success_notifies) {
+    // el worker corrido sincrónicamente (localhost no sale a la red): deja la
+    // lista y el rc, notifica con el job embebido y decrementa el contador.
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_DOMAIN, "localhost", 80);
+    s.client_fd = 7;
+
+    struct selector_key *key = malloc(sizeof(*key));
+    ck_assert_ptr_nonnull(key);
+    key->s    = NULL;
+    key->fd   = s.client_fd;
+    key->data = &s;
+
+    reset_injection();
+    // simular el incremento que hace resolve_start antes de crear el hilo
+    pthread_mutex_lock(&resolve_mutex);
+    resolve_inflight++;
+    pthread_mutex_unlock(&resolve_mutex);
+
+    ck_assert_ptr_null(resolve_thread(key));   // libera `key'
+
+    ck_assert_int_eq(0, s.resolve_gai);
+    ck_assert_ptr_nonnull(s.origin_resolution);
+    ck_assert_int_eq(1, g_notify_calls);
+    ck_assert_int_eq(7, g_notify_fd);
+    ck_assert_ptr_eq(&s.resolve_job, g_notify_job);
+    ck_assert_uint_eq(0, resolve_inflight);
+
+    freeaddrinfo(s.origin_resolution);
+
+    // con el contador en cero la espera de apagado retorna de inmediato
+    resolve_shutdown_wait();
+}
+END_TEST
+
+START_TEST (test_resolve_thread_failure_leaves_no_resolution) {
+    // un FQDN irresoluble (.invalid, RFC 6761): rc != 0, no se publica lista
+    // (getaddrinfo deja el out-param indefinido en fallo) e igual notifica.
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_DOMAIN, "no-existe-x9k2.invalid", 80);
+    s.client_fd = 9;
+
+    struct selector_key *key = malloc(sizeof(*key));
+    ck_assert_ptr_nonnull(key);
+    key->s    = NULL;
+    key->fd   = s.client_fd;
+    key->data = &s;
+
+    reset_injection();
+    pthread_mutex_lock(&resolve_mutex);
+    resolve_inflight++;
+    pthread_mutex_unlock(&resolve_mutex);
+
+    ck_assert_ptr_null(resolve_thread(key));
+
+    ck_assert_int_ne(0, s.resolve_gai);
+    ck_assert_ptr_null(s.origin_resolution);
+    ck_assert_int_eq(1, g_notify_calls);
+    ck_assert_ptr_eq(&s.resolve_job, g_notify_job);
+    ck_assert_uint_eq(0, resolve_inflight);
+}
+END_TEST
+
+START_TEST (test_resolve_start_pthread_failure_replies_general_failure) {
+    // pthread_create falla: REPLY 0x01, sin notificación, contador en cero y
+    // la copia del key liberada por resolve_start (valgrind lo confirma).
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_DOMAIN, "localhost", 80);
+    s.client_fd = 100;
+    s.origin_fd = -1;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_pthread_mode = 1;
+    ck_assert_uint_eq(REQUEST_WRITE, connect_start(&key));
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, g_reply_rep);
+    ck_assert_int_eq(0, g_notify_calls);
+    ck_assert_uint_eq(0, resolve_inflight);
+}
+END_TEST
+
+START_TEST (test_connect_start_fqdn_goes_resolving) {
+    // el camino FQDN de connect_start: cliente a OP_NOOP ANTES de crear el
+    // hilo y transición a RESOLVING. El wrap captura el arg sin crear el hilo
+    // y el test completa el ciclo corriendo el worker sincrónicamente (si no,
+    // quedarían el contador en 1 y la copia del key filtrada).
+    struct socks5 s;
+    init_dest(&s, SOCKS5_ATYP_DOMAIN, "localhost", 80);
+    s.client_fd = 5;
+    s.origin_fd = -1;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_pthread_mode = 2;
+    ck_assert_uint_eq(RESOLVING, connect_start(&key));
+    ck_assert_int_eq(OP_NOOP, g_setinterest_last);
+    ck_assert_uint_eq(1, resolve_inflight);
+    ck_assert_ptr_nonnull(g_pthread_arg);
+    ck_assert_int_eq(0, g_notify_calls);
+
+    ck_assert_ptr_null(resolve_thread(g_pthread_arg));
+
+    ck_assert_uint_eq(0, resolve_inflight);
+    ck_assert_int_eq(1, g_notify_calls);
+    ck_assert_int_eq(5, g_notify_fd);
+    ck_assert_int_eq(0, s.resolve_gai);
+    ck_assert_ptr_nonnull(s.origin_resolution);
+
+    freeaddrinfo(s.origin_resolution);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_connect");
@@ -426,6 +611,12 @@ suite(void) {
     tcase_add_test(tc, test_getsockopt_failure_returns_error);
     tcase_add_test(tc, test_errno_to_rep);
     tcase_add_test(tc, test_gai_error_to_rep);
+    tcase_add_test(tc, test_resolve_done_error_replies_host_unreachable);
+    tcase_add_test(tc, test_resolve_done_success_goes_connecting);
+    tcase_add_test(tc, test_resolve_thread_success_notifies);
+    tcase_add_test(tc, test_resolve_thread_failure_leaves_no_resolution);
+    tcase_add_test(tc, test_resolve_start_pthread_failure_replies_general_failure);
+    tcase_add_test(tc, test_connect_start_fqdn_goes_resolving);
     suite_add_tcase(s, tc);
 
     return s;
