@@ -25,8 +25,8 @@
 #include <arpa/inet.h>   // inet_pton
 
 // #include "include/socks5.h"
-#include "../shared/selector.h"
-#include "../shared/metrics.h"
+#include "selector.h"
+#include "metrics.h"
 #include "include/socks5nio.h"
 #include "states/include/state_connect.h"   // resolve_shutdown_wait
 #include "include/mgmt.h"

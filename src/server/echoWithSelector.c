@@ -8,8 +8,8 @@
 #include <signal.h>
 #include <errno.h>
 
-#include "../shared/selector.h"
-#include "../shared/buffer.h"
+#include "selector.h"
+#include "buffer.h"
 
 #define PORT        8080
 #define BUFFER_SIZE 1024
