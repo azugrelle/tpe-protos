@@ -34,12 +34,21 @@
 #include "utils/include/user_auth_utils.h"
 
 
-static bool done = false;
+/**
+ * cantidad de señales de terminación recibidas (SIGTERM/SIGINT). La 1ª pide
+ * apagado ordenado; la 2ª, corte inmediato. Satura en 2: la lógica solo
+ * distingue 0 / 1 / ≥2, e incrementar sin techo ante una ráfaga de señales
+ * sería overflow con signo sobre el sig_atomic_t.
+ */
+static volatile sig_atomic_t sig_count = 0;
 
 static void
 sigterm_handler(const int signal) {
-    printf("signal %d, cleaning up and exiting\n",signal);
-    done = true;
+    // solo operaciones async-signal-safe acá adentro: nada de I/O.
+    (void) signal;
+    if(sig_count < 2) {
+        sig_count++;
+    }
 }
 
 int
@@ -96,14 +105,37 @@ main(const int argc, char **argv) {
 
     // registrar sigterm es útil para terminar el programa normalmente.
     // esto ayuda mucho en herramientas como valgrind.
-    signal(SIGTERM, sigterm_handler);
-    signal(SIGINT,  sigterm_handler);
+    // SIGTERM y SIGINT van ambas en sa_mask: sigaction solo bloquea por
+    // defecto la señal en curso, y si una interrumpiera al handler de la otra
+    // en medio del sig_count++ (read-modify-write, no atómico) se perdería un
+    // incremento — justo el que dispara el corte forzado de la 2ª señal.
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigterm_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaddset(&sa.sa_mask, SIGTERM);
+    sigaddset(&sa.sa_mask, SIGINT);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT,  &sa, NULL);
 
     // un peer que cierra su punta a mitad de un send() no debe matar el
     // proceso entero: ignorando SIGPIPE el write falla con EPIPE y cada
     // estado lo maneja localmente (los send() ya usan MSG_NOSIGNAL como
     // segunda línea de defensa).
     signal(SIGPIPE, SIG_IGN);
+
+    // bloquear las señales de terminación en este hilo: el pselect del
+    // selector espera con la máscara vacía, así que solo durante la espera
+    // quedan desbloqueadas. Una señal que caiga entre el chequeo de sig_count
+    // y el arranque del pselect queda pendiente y se entrega apenas empieza
+    // la espera (EINTR inmediato) en vez de esperar el timeout del selector.
+    // Los hilos de DNS se crean después y heredan la máscara: solo este hilo
+    // atiende la terminación.
+    sigset_t term_mask;
+    sigemptyset(&term_mask);
+    sigaddset(&term_mask, SIGTERM);
+    sigaddset(&term_mask, SIGINT);
+    sigprocmask(SIG_BLOCK, &term_mask, NULL);
 
     if(selector_fd_set_nio(server) == -1) {
         err_msg = "getting server socket flags";
@@ -188,7 +220,7 @@ main(const int argc, char **argv) {
         goto finally;
     }
 
-    for(;!done;) {
+    for(;sig_count == 0;) {
         err_msg = NULL;
         ss = selector_select(selector);
         if(ss != SELECTOR_SUCCESS) {
