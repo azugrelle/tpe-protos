@@ -25,6 +25,51 @@ una transferencia falla o llega corrupta (distinguiendo si un proceso murió en
 el medio), `2` si falta una dependencia (`curl`, `python3`, `sha256sum`) o
 falla el build.
 
+## `multiip_fallback.sh`
+
+Valida el connect robusto multi-IP de T51: cuando un FQDN resuelve a varias
+direcciones, el proxy prueba cada una hasta que alguna funcione, y responde el
+REP correcto si todas fallan. El truco es `multiip_shim.c` (LD_PRELOAD sobre el
+proxy): resuelve nombres mágicos a listas controladas de loopbacks, y como el
+`http.server` de origen escucha **solo** en `127.0.0.1`, las demás direcciones
+(`127.0.0.2/3`) rechazan con `ECONNREFUSED` — direcciones "caídas"
+determinísticas, sin red externa ni tocar `/etc/hosts`. Dos casos:
+
+1. `multiip-fallback.test` → `[127.0.0.2 caída, 127.0.0.1 viva]`: la descarga
+   vía `curl --socks5-hostname` llega íntegra por la segunda dirección.
+2. `multiip-allrefused.test` → ambas caídas: `rep_client.py` verifica REP
+   `0x05` (connection refused) y que el proxy cierra tras el reply.
+
+```sh
+./src/test/integration/multiip_fallback.sh
+```
+
+Mismas garantías que `relay_integrity.sh`: recompila server y shim, puertos
+dinámicos, espera de listen, timeouts y cleanup. Sale `0` si ambos casos
+pasan, `1` si el fallback no anduvo o el REP fue otro, `2` por dependencias o
+build.
+
+## `multiip_shim.c`
+
+Shim de `getaddrinfo`/`freeaddrinfo` que fabrica las listas multi-IP del test
+anterior. Construye **sus propios** nodos (un malloc por candidato) y libera
+él mismo las listas que fabricó (registro de cabezas bajo mutex, passthrough
+al `freeaddrinfo` real para las ajenas): mezclar nodos propios con listas de
+la libc y liberarlos cruzados no está garantizado por POSIX.
+
+## `rep_client.py`
+
+Cliente SOCKS5 mínimo que expone lo que curl esconde: **qué** REP devolvió el
+proxy ante un CONNECT rechazado. Negocia hello + request, compara el byte REP
+del REPLY contra el esperado y, si es de error, valida que el proxy cierra la
+conexión después (RFC 1928 §6). Lo invoca `multiip_fallback.sh`, pero sirve
+solo:
+
+```sh
+python3 src/test/integration/rep_client.py \
+    <puerto-proxy> <dest-host> <dest-port> <rep-esperado>
+```
+
 ## `half_close_client.py`
 
 Cliente SOCKS5 mínimo que ejercita el half-close que curl nunca hace: CONNECT,
