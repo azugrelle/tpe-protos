@@ -362,6 +362,23 @@ init_ai(struct addrinfo *ai, struct sockaddr_in *sin, const char *ip,
     ai->ai_next     = next;
 }
 
+/* nodo de addrinfo IPv6 (::1) para armar listas de familia mixta */
+static void
+init_ai6(struct addrinfo *ai, struct sockaddr_in6 *sin6, uint16_t port,
+         struct addrinfo *next) {
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_addr   = in6addr_loopback;
+    sin6->sin6_port   = htons(port);
+    memset(ai, 0, sizeof(*ai));
+    ai->ai_family   = AF_INET6;
+    ai->ai_socktype = SOCK_STREAM;
+    ai->ai_protocol = IPPROTO_TCP;
+    ai->ai_addr     = (struct sockaddr *)sin6;
+    ai->ai_addrlen  = sizeof(*sin6);
+    ai->ai_next     = next;
+}
+
 START_TEST (test_connect_retry_second_candidate) {
     // dos candidatos: el 1º rechaza (connect inmediato falla), el 2º conecta.
     struct sockaddr_in a0, a1;
@@ -504,6 +521,54 @@ START_TEST (test_connect_try_last_network_error_wins) {
     ck_assert_int_eq(2, g_connect_calls);
     ck_assert_uint_eq(SOCKS5_REP_CONN_REFUSED, g_reply_rep);
     ck_assert_int_eq(1, g_freeaddrinfo_calls);
+}
+END_TEST
+
+START_TEST (test_connect_try_mixed_family_falls_back_to_ipv4) {
+    // el caso real más común de multi-IP con dirección caída: el candidato
+    // IPv6 falla (ENETUNREACH, lo que pasa sin conectividad v6) y el IPv4
+    // conecta. El socket de cada intento se crea con la familia DEL candidato,
+    // no una fija, y origin_addr termina siendo la IPv4.
+    struct sockaddr_in6 a0;
+    struct sockaddr_in  a1;
+    struct addrinfo     n0, n1;
+    init_ai(&n1, &a1, "127.0.0.4", 2222, NULL);
+    init_ai6(&n0, &a0, 1111, &n1);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = -1;
+    s.references                = 1;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_connect_script[0]  = (struct call_script){ .rc = -1, .err = ENETUNREACH };
+    g_connect_script[1]  = (struct call_script){ .rc = 0,  .err = 0 };
+    g_connect_script_len = 2;
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(CONNECTING, st);
+    ck_assert_int_eq(2, g_connect_calls);                // v6 falló, v4 conectó
+    ck_assert_int_eq(1, g_register_calls);
+    ck_assert_uint_eq(2, s.references);
+    ck_assert_int_ne(-1, s.origin_fd);
+    ck_assert_int_eq(0, g_reply_calls);                  // nada al cliente todavía
+    ck_assert_int_eq(0, g_freeaddrinfo_calls);           // la lista sigue viva
+    ck_assert_ptr_eq(&n1, s.origin_resolution_current);
+
+    // origin_addr es la del candidato IPv4 activo, con su largo real
+    struct sockaddr_in *copied = (struct sockaddr_in *)&s.origin_addr;
+    ck_assert_uint_eq(AF_INET, copied->sin_family);
+    ck_assert_uint_eq(inet_addr("127.0.0.4"), copied->sin_addr.s_addr);
+    ck_assert_uint_eq(htons(2222), copied->sin_port);
+    ck_assert_uint_eq(sizeof(a1), s.origin_addr_len);
+
+    close(s.origin_fd);
 }
 END_TEST
 
@@ -919,6 +984,7 @@ suite(void) {
     tcase_add_test(tc, test_connect_try_all_refused_replies_conn_refused);
     tcase_add_test(tc, test_connect_try_network_verdict_beats_local_error);
     tcase_add_test(tc, test_connect_try_last_network_error_wins);
+    tcase_add_test(tc, test_connect_try_mixed_family_falls_back_to_ipv4);
     tcase_add_test(tc, test_register_failure_replies_general_failure);
     tcase_add_test(tc, test_setinterest_failure_returns_error);
     tcase_add_test(tc, test_getsockopt_failure_returns_error);
