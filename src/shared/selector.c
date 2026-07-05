@@ -479,11 +479,22 @@ handle_block_notifications(fd_selector s) {
     struct selector_key key = {
         .s = s,
     };
+    // Tomamos la lista completa y dejamos la cola vacía bajo el mutex, y
+    // recién después liberamos el mutex y despachamos: ningún handle_block
+    // debe correr con resolution_mutex tomado. Los callbacks pueden reentrar
+    // al selector (p.ej. selector_notify_block_job desde otra resolución que
+    // termina, o el propio unregister de la conexión), y tomarlo ahí
+    // deadlockearía. Una vez desligada, la lista es privada de este hilo: los
+    // productores encolan sobre la cola ya vacía sin tocar estos nodos.
     pthread_mutex_lock(&s->resolution_mutex);
     struct blocking_job* j = s->resolution_jobs;
+    s->resolution_jobs = NULL;
+    pthread_mutex_unlock(&s->resolution_mutex);
+
     while (j != NULL) {
         // el callback puede destruir a la conexión dueña de un job embebido:
-        // todo lo que haga falta del job se captura antes de despachar.
+        // todo lo que haga falta del job se captura antes de despachar, porque
+        // tras el handle_block la memoria del job podría ya no ser válida.
         struct blocking_job* next = j->next;
         const bool           heap = j->heap;
 
@@ -499,8 +510,6 @@ handle_block_notifications(fd_selector s) {
         }
         j = next;
     }
-    s->resolution_jobs = 0;
-    pthread_mutex_unlock(&s->resolution_mutex);
 }
 
 selector_status

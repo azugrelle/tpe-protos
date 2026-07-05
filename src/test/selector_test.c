@@ -208,6 +208,92 @@ START_TEST (test_notify_block_job) {
 }
 END_TEST
 
+// Verifica que el drenaje NO sostiene resolution_mutex mientras despacha.
+// Reentra al mutex igual que lo haría un callback real que reencola una
+// notificación o desregistra su conexión. Si el drenaje lo tuviera tomado,
+// este lock (mismo hilo, mutex no recursivo) deadlockearía; con la cola ya
+// desligada sólo espera brevemente a que un productor lo suelte. No se puede
+// usar trylock: un productor concurrente puede tener el mutex y devolver EBUSY
+// sin que eso implique que el drenaje lo tenga.
+static void
+block_mutex_check_callback(struct selector_key *key) {
+    ck_assert_ptr_eq(data_mark, key->data);
+    pthread_mutex_lock(&key->s->resolution_mutex);
+    pthread_mutex_unlock(&key->s->resolution_mutex);
+    block_count++;
+}
+
+#define CONC_PRODUCERS ((unsigned) 4)
+#define CONC_PER_THREAD ((unsigned) 250)
+
+struct producer_arg {
+    fd_selector s;
+    int         fd;
+};
+
+static void *
+notify_producer(void *p) {
+    struct producer_arg *a = p;
+    for(unsigned i = 0; i < CONC_PER_THREAD; i++) {
+        // wrapper del heap: ejercita malloc/free del job bajo contención
+        selector_notify_block(a->s, a->fd);
+    }
+    return NULL;
+}
+
+// Varios hilos encolan notificaciones mientras el hilo principal drena. Se
+// ejercita la contención sobre resolution_mutex y, en cada dispatch, se
+// verifica que el mutex está libre (block_mutex_check_callback). El total de
+// callbacks debe coincidir exactamente con lo encolado.
+START_TEST (test_notify_block_concurrent) {
+    const struct selector_init init_conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 1, .tv_nsec = 0 },
+    };
+    ck_assert_int_eq(0, selector_init(&init_conf));
+
+    destroy_count = 0;
+    block_count   = 0;
+    fd_selector s = selector_new(INITIAL_SIZE);
+    ck_assert_ptr_nonnull(s);
+    s->selector_thread = pthread_self();
+
+    const struct fd_handler h = {
+        .handle_close = destroy_callback,
+        .handle_block = block_mutex_check_callback,
+    };
+    const int fd = 42;
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_register(s, fd, &h, 0, data_mark));
+
+    pthread_t          th[CONC_PRODUCERS];
+    struct producer_arg args[CONC_PRODUCERS];
+    for(unsigned i = 0; i < CONC_PRODUCERS; i++) {
+        args[i].s  = s;
+        args[i].fd = fd;
+        ck_assert_int_eq(0, pthread_create(&th[i], NULL, notify_producer,
+                                           &args[i]));
+    }
+
+    const unsigned total = CONC_PRODUCERS * CONC_PER_THREAD;
+    // drena mientras los productores siguen encolando
+    while(block_count < total) {
+        handle_block_notifications(s);
+    }
+
+    for(unsigned i = 0; i < CONC_PRODUCERS; i++) {
+        ck_assert_int_eq(0, pthread_join(th[i], NULL));
+    }
+    // drenaje final por si algo quedó encolado tras el último chequeo
+    handle_block_notifications(s);
+
+    ck_assert_uint_eq(total, block_count);
+    ck_assert_ptr_null(s->resolution_jobs);
+
+    selector_destroy(s);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("nio");
@@ -219,6 +305,11 @@ suite(void) {
     tcase_add_test(tc, test_selector_register_fd);
     tcase_add_test(tc, test_selector_register_unregister_register);
     tcase_add_test(tc, test_notify_block_job);
+    tcase_add_test(tc, test_notify_block_concurrent);
+    // si una regresión hiciera que el drenaje sostenga resolution_mutex
+    // durante el dispatch, el callback reentrante deadlockea: acotamos la
+    // espera para que falle por timeout en vez de colgarse.
+    tcase_set_timeout(tc, 10);
     suite_add_tcase(s, tc);
 
     return s;
