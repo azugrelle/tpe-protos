@@ -1,6 +1,8 @@
 #ifndef SOCKS5NIO_H_pR3tQ9vW1kZ7bN5xM2cH8dF4gL6jS0aY
 #define SOCKS5NIO_H_pR3tQ9vW1kZ7bN5xM2cH8dF4gL6jS0aY
 
+#include <stdbool.h>
+
 #include "selector.h"
 
 /** handler de aceptación de una nueva conexión entrante al proxy */
@@ -22,5 +24,23 @@ socksv5_pool_destroy(void);
 /** cantidad de conexiones SOCKS5 vivas (para el drenado del apagado) */
 unsigned
 socksv5_live_count(void);
+
+/**
+ * activa el modo drenado del apagado: las resoluciones de DNS que terminen
+ * después cierran su conexión en vez de avanzar al connect del origen.
+ */
+void
+socksv5_start_draining(void);
+
+bool
+socksv5_is_draining(void);
+
+/**
+ * cierra las conexiones en estados de handshake/conexión (sin transferencia
+ * útil que drenar). No toca COPY (se drena) ni RESOLVING (el hilo de DNS
+ * sigue en vuelo; esa conexión se cierra al notificar, por el modo drenado).
+ */
+void
+socksv5_shutdown_handshakes(fd_selector s);
 
 #endif

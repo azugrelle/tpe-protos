@@ -235,6 +235,11 @@ main(const int argc, char **argv) {
             selector_unregister_fd(selector, mng_server);
             close(mng_server);
             mng_server = -1;
+            // las resoluciones que terminen tarde cierran su conexión en vez
+            // de avanzar a CONNECTING (escaparían al barrido, que corre una
+            // sola vez); después, cerrar lo que esté a medio handshake.
+            socksv5_start_draining();
+            socksv5_shutdown_handshakes(selector);
         }
         // 2ª señal: corte inmediato, el finally cierra lo que siga vivo.
         // Drenado completo: no queda ninguna conexión SOCKS5 activa.

@@ -233,6 +233,13 @@ socks5_handler_ref(void) {
     return NULL;
 }
 
+// el flag real vive en socks5nio.c, que este test no linkea; acá nunca se
+// está drenando (el camino de apagado no es objeto de estos tests).
+bool
+socksv5_is_draining(void) {
+    return false;
+}
+
 /* arma un `struct socks5' mínimo con el destino ya "parseado" */
 static void
 init_dest(struct socks5 *s, uint8_t atyp, const char *host, uint16_t port) {

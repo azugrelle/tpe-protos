@@ -63,6 +63,24 @@ socksv5_live_count(void) {
     return live_count;
 }
 
+/**
+ * modo drenado del apagado ordenado: una vez activo, una resolución de DNS que
+ * termine tarde cierra su conexión en vez de avanzar a CONNECTING (si no, ese
+ * fd nuevo escaparía al barrido de cierre, que corre una sola vez, y podría
+ * impedir para siempre que el drenado termine).
+ */
+static bool draining = false;
+
+void
+socksv5_start_draining(void) {
+    draining = true;
+}
+
+bool
+socksv5_is_draining(void) {
+    return draining;
+}
+
 static const struct state_definition *
 socks5_describe_states(void);
 
@@ -342,6 +360,36 @@ socksv5_done(struct selector_key* key) {
             if(SELECTOR_SUCCESS != selector_unregister_fd(key->s, fds[i])) {
                 abort();
             }
+        }
+    }
+}
+
+void
+socksv5_shutdown_handshakes(fd_selector s) {
+    struct socks5 *next;
+    for(struct socks5 *c = live_head; c != NULL; c = next) {
+        // el cierre destruye el nodo actual: guardar el siguiente antes
+        next = c->live_next;
+        switch(stm_state(&c->stm)) {
+            // lista positiva de estados sin transferencia útil que drenar.
+            // COPY queda afuera adrede (es lo que el drenado protege) y
+            // RESOLVING también: mientras el hilo de DNS corre nada puede
+            // desregistrar su client_fd; esa conexión se cierra sola vía
+            // resolve_done al notificar (ver socksv5_is_draining).
+            case HELLO_READ:   case HELLO_WRITE:
+            case AUTH_READ:    case AUTH_WRITE:
+            case REQUEST_READ: case REQUEST_WRITE:
+            case CONNECTING: {
+                struct selector_key key = {
+                    .s    = s,
+                    .fd   = c->client_fd,
+                    .data = c,
+                };
+                socksv5_done(&key);
+                break;
+            }
+            default:
+                break;
         }
     }
 }

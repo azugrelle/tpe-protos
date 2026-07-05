@@ -399,6 +399,13 @@ unsigned
 resolve_done(struct selector_key *key) {
     struct socks5 *s = ATTACHMENT(key);
 
+    // el server se está apagando: esta conexión quedó salteada por el barrido
+    // de cierre (RESOLVING era intocable con el hilo de DNS en vuelo). Cerrarla
+    // acá — corre en el hilo principal, ya sincronizado por la notificación —
+    // en vez de abrir un connect nuevo que el barrido ya no vería.
+    if(socksv5_is_draining()) {
+        return ERROR;
+    }
     if(s->resolve_gai != 0) {
         return connect_fail(s, key->s, gai_error_to_rep(s->resolve_gai));
     }
