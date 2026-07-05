@@ -99,6 +99,12 @@ main(const int argc, char **argv) {
     signal(SIGTERM, sigterm_handler);
     signal(SIGINT,  sigterm_handler);
 
+    // un peer que cierra su punta a mitad de un send() no debe matar el
+    // proceso entero: ignorando SIGPIPE el write falla con EPIPE y cada
+    // estado lo maneja localmente (los send() ya usan MSG_NOSIGNAL como
+    // segunda línea de defensa).
+    signal(SIGPIPE, SIG_IGN);
+
     if(selector_fd_set_nio(server) == -1) {
         err_msg = "getting server socket flags";
         goto finally;
