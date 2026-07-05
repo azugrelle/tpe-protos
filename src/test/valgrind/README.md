@@ -14,8 +14,12 @@ le manda `SIGTERM` al server: el teardown debe liberar cada `addrinfo`.
 ./src/test/valgrind/leak_connecting_teardown.sh
 ```
 
-Sale con código `0` si no hay fugas, `1` si valgrind reporta errores/fugas, `2`
-si falta valgrind o falla el build. Usa `driver_connecting.py` como generador de
+Sale con código `0` si no hay fugas ni errores de memoria, `1` si valgrind
+reporta errores/fugas, `2` si falta valgrind, falla el build o el escenario no
+llega a establecerse. Los descriptores abiertos al exit se imprimen a título
+informativo (siempre figura el fd del `--log-file` de valgrind, y el teardown
+no cierra los fds de conexiones aún vivas al SIGTERM — pendiente de robustez,
+T92): no son parte del veredicto. Usa `driver_connecting.py` como generador de
 carga (se le puede pasar puerto y cantidad de conexiones).
 
 ## `leak_copy_teardown.sh`
@@ -32,3 +36,24 @@ debe llevar cada conexión a `cleanup` exactamente una vez.
 ```
 
 Mismos códigos de salida que el test de CONNECTING.
+
+## `leak_resolving_teardown.sh`
+
+Verifica la sincronización del apagado con el DNS asíncrono: el server recibe
+`SIGTERM` con **resoluciones en vuelo** (hilos corriendo `getaddrinfo`). El
+apagado es determinístico porque `main` llama `resolve_shutdown_wait()` antes
+de destruir el selector: espera a que todos los hilos de resolución terminen,
+así ninguno escribe sobre memoria liberada ni notifica sobre un mutex
+destruido. Sin esa espera este test reporta invalid writes, no solo fugas.
+
+Para que el SIGTERM caiga siempre dentro de la ventana, el server corre con
+`slowdns_shim.c` precargado (`LD_PRELOAD`): el `getaddrinfo` de los hosts
+`slow*` duerme 3 segundos y resuelve como `localhost`. El driver
+(`driver_resolving.py`, en background) mezcla destinos FQDN lentos, rápidos e
+irresolubles para poblar `RESOLVING` y sus dos salidas.
+
+```sh
+./src/test/valgrind/leak_resolving_teardown.sh
+```
+
+Mismos códigos de salida que los anteriores.
