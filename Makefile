@@ -47,7 +47,7 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/request_parser_test \
       $(TEST_FOLDER)/state_connect_test \
       $(TEST_FOLDER)/state_copy_test \
-      $(TEST_FOLDER)/state_request_test
+      $(TEST_FOLDER)/state_request_test \
       $(TEST_FOLDER)/metrics_test
 
 test: $(TESTS)
