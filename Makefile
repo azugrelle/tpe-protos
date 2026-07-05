@@ -4,7 +4,7 @@ include ./Makefile.inc
 # excluye del binario `server' para no chocar con src/server/main.c.
 SERVER_SOURCES=$(filter-out src/server/echoWithSelector.c, \
                $(wildcard src/server/*.c) $(wildcard src/server/states/*.c) \
-               $(wildcard src/server/utils/*.c))
+               $(wildcard src/server/parsers/*.c) $(wildcard src/server/utils/*.c))
 CLIENT_SOURCES=$(wildcard src/client/*.c)
 SHARED_SOURCES=$(wildcard src/shared/*.c)
 
@@ -80,7 +80,7 @@ $(TEST_FOLDER)/stm_test: src/test/stm_test.c src/shared/stm.c src/shared/selecto
 	$(COMPILER) $(COMPILER_FLAGS) src/test/stm_test.c src/shared/stm.c src/shared/selector.c $(CHECK_FLAGS) -o $@
 
 # request_parser_test incluye request_parser.c inline
-$(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/request_parser.c src/shared/buffer.c
+$(TEST_FOLDER)/request_parser_test: src/test/request_parser_test.c src/server/parsers/request_parser.c src/shared/buffer.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) src/test/request_parser_test.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
@@ -105,9 +105,9 @@ $(TEST_FOLDER)/state_copy_test: src/test/state_copy_test.c src/server/states/sta
 # state_request_test incluye state_request.c inline (stubs de connect_start /
 # copy_start / selector); send() se intercepta con --wrap para forzar envíos
 # parciales del reply.
-$(TEST_FOLDER)/state_request_test: src/test/state_request_test.c src/server/states/state_request.c src/server/request_parser.c src/shared/buffer.c
+$(TEST_FOLDER)/state_request_test: src/test/state_request_test.c src/server/states/state_request.c src/server/parsers/request_parser.c src/shared/buffer.c
 	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=send src/test/state_request_test.c src/server/request_parser.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
+	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=send src/test/state_request_test.c src/server/parsers/request_parser.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
 # metrics_test incluye metrics.c inline
 $(TEST_FOLDER)/metrics_test: src/test/metrics_test.c src/shared/metrics.c

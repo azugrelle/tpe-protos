@@ -8,7 +8,7 @@
  * byte lo hace el parser dedicado de `hello.c'.
  */
 
-#include "socks5_state.h"
+#include "include/socks5_state.h"
 #include "selector.h"
 
 /** inicializa las variables del estado al entrar a HELLO_READ */

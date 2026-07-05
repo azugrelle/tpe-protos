@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>  // abort
 
-#include "hello_parser.h"
+#include "include/hello_parser.h"
 
 void
 hello_parser_init(struct hello_parser *p) {

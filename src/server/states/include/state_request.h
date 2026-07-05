@@ -5,7 +5,7 @@
  * state_request.h -- handler del estado REQUEST_READ (RFC 1928 §4).
  */
 
-#include "socks5_state.h"
+#include "include/socks5_state.h"
 #include "selector.h"
 
 /** inicializa el estado REQUEST_READ (on_arrival) */

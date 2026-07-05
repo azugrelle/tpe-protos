@@ -12,8 +12,8 @@
 #include <sys/socket.h>
 
 #include "stm.h"
-#include "socks5nio.h"
-#include "socks5_state.h"
+#include "include/socks5nio.h"
+#include "include/socks5_state.h"
 
 #include "states/include/state_hello.h"
 #include "states/include/state_auth.h"

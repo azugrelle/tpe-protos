@@ -24,13 +24,13 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>   // inet_pton
 
-// #include "socks5.h"
+// #include "include/socks5.h"
 #include "../shared/selector.h"
 #include "../shared/metrics.h"
-#include "socks5nio.h"
+#include "include/socks5nio.h"
 #include "states/include/state_connect.h"   // resolve_shutdown_wait
-#include "mgmt.h"
-#include "args.h"
+#include "include/mgmt.h"
+#include "include/args.h"
 #include "utils/include/user_auth_utils.h"
 
 

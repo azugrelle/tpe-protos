@@ -9,7 +9,7 @@
  * `auth_parser.c'.
  */
 
-#include "socks5_state.h"
+#include "include/socks5_state.h"
 #include "selector.h"
 
 /** inicializa las variables del estado al entrar a AUTH_READ */

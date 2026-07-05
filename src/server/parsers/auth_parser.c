@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>  // abort
 
-#include "auth_parser.h"
+#include "include/auth_parser.h"
 
 void
 auth_parser_init(struct auth_parser *p) {

@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
-#include "utils/include/hashmap.h"
-#include "utils/include/user_auth_utils.h"
+#include "include/hashmap.h"
+#include "include/user_auth_utils.h"
 
 #define HASHMAP_SIZE 32
 #define MAX_CREDENTIAL_LEN (ENTRY_LENGTH - 1)

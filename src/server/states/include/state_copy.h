@@ -15,7 +15,7 @@
  * `copy_start', llamado desde `request_write', que devuelve el próximo estado.
  */
 
-#include "socks5_state.h"
+#include "include/socks5_state.h"
 #include "selector.h"
 
 /**

@@ -3,7 +3,7 @@
 #include <check.h>
 
 // asi se puede probar las funciones internas
-#include "request_parser.c"
+#include "parsers/request_parser.c"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
 

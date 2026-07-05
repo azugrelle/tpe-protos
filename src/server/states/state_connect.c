@@ -33,10 +33,10 @@
 #include <arpa/inet.h>    // ntohs
 
 #include "include/state_connect.h"
-#include "include/state_request.h"   // request_reply
-#include "request_parser.h"          // SOCKS5_ATYP_IPV4, SOCKS5_REP_*
-#include "socks5nio.h"               // socks5_handler_ref
-#include "metrics.h"                 // metrics_add_user_site (ACCESS_LOG, T71)
+#include "include/state_request.h"           // request_reply
+#include "parsers/include/request_parser.h"  // SOCKS5_ATYP_IPV4, SOCKS5_REP_*
+#include "include/socks5nio.h"               // socks5_handler_ref
+#include "metrics.h"                         // metrics_add_user_site (ACCESS_LOG)
 
 /** vuelca dest_port a texto para metrics_add_user_site (que espera char*) */
 static void

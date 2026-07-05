@@ -18,7 +18,7 @@
  * `request_process', que devuelve el próximo estado.
  */
 
-#include "socks5_state.h"
+#include "include/socks5_state.h"
 #include "selector.h"
 
 /**

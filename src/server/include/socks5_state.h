@@ -25,9 +25,9 @@
 #include "selector.h"
 #include "stm.h"
 
-#include "hello_parser.h"
-#include "auth_parser.h"
-#include "request_parser.h"
+#include "parsers/include/hello_parser.h"
+#include "parsers/include/auth_parser.h"
+#include "parsers/include/request_parser.h"
 
 #define N(x) (sizeof(x)/sizeof((x)[0]))
 
