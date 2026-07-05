@@ -39,6 +39,8 @@ static int     g_soerr_calls       = 0;
 static bool    g_freeaddrinfo_capture = false;
 static int     g_freeaddrinfo_calls   = 0;
 static struct addrinfo *g_freeaddrinfo_last = NULL;
+static int     g_unregister_calls  = 0;   // fds desregistrados del selector
+static int     g_unregister_last_fd = -1;
 static int     g_notify_calls      = 0;   // notificaciones de bloqueo
 static int     g_notify_fd         = -1;  // fd de la última notificación
 static struct blocking_job *g_notify_job = NULL;
@@ -60,6 +62,8 @@ reset_injection(void) {
     g_freeaddrinfo_capture = false;
     g_freeaddrinfo_calls   = 0;
     g_freeaddrinfo_last    = NULL;
+    g_unregister_calls    = 0;
+    g_unregister_last_fd  = -1;
     g_notify_calls        = 0;
     g_notify_fd           = -1;
     g_notify_job          = NULL;
@@ -156,7 +160,9 @@ __wrap_freeaddrinfo(struct addrinfo *res) {
 
 selector_status
 selector_unregister_fd(fd_selector s, const int fd) {
-    (void)s; (void)fd;
+    (void)s;
+    g_unregister_calls++;
+    g_unregister_last_fd = fd;
     return SELECTOR_SUCCESS;
 }
 
@@ -396,6 +402,111 @@ START_TEST (test_connect_retry_second_candidate) {
 }
 END_TEST
 
+START_TEST (test_connect_try_all_refused_replies_conn_refused) {
+    // todos los candidatos rechazan de entrada: se agota la lista, se libera
+    // exactamente una vez y el cliente recibe el REP del último error de red.
+    struct sockaddr_in a0, a1;
+    struct addrinfo    n0, n1;
+    init_ai(&n1, &a1, "127.0.0.2", 2222, NULL);
+    init_ai(&n0, &a0, "127.0.0.1", 1111, &n1);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = -1;
+    s.references                = 1;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_connect_script[0]  = (struct call_script){ .rc = -1, .err = ECONNREFUSED };
+    g_connect_script_len = 1;   // se repite: rechazan todos
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(2, g_connect_calls);                    // probó los dos
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_CONN_REFUSED, g_reply_rep); // 0x05
+    ck_assert_int_eq(OP_WRITE, g_setinterest_last);
+    ck_assert_int_eq(0, g_register_calls);                   // nadie llegó a activo
+    ck_assert_uint_eq(1, s.references);
+    ck_assert_int_eq(-1, s.origin_fd);                       // cada intento cerró el suyo
+    ck_assert_int_eq(1, g_freeaddrinfo_calls);               // liberada una sola vez
+    ck_assert_ptr_eq(&n0, g_freeaddrinfo_last);
+    ck_assert_ptr_null(s.origin_resolution);
+    ck_assert_ptr_null(s.origin_resolution_current);
+}
+END_TEST
+
+START_TEST (test_connect_try_network_verdict_beats_local_error) {
+    // el 1er candidato tiene un veredicto de red (ECONNREFUSED); el 2º ni
+    // siquiera consigue socket (familia bogus). El REP sale del veredicto de
+    // red, no del fallo local: 0x05, no 0x01.
+    struct sockaddr_in a0, a1;
+    struct addrinfo    n0, n1;
+    init_ai(&n1, &a1, "127.0.0.2", 2222, NULL);
+    init_ai(&n0, &a0, "127.0.0.1", 1111, &n1);
+    n1.ai_family = AF_MAX + 1;   // socket() → EAFNOSUPPORT
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = -1;
+    s.references                = 1;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_connect_script[0]  = (struct call_script){ .rc = -1, .err = ECONNREFUSED };
+    g_connect_script_len = 1;
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(1, g_connect_calls);                    // el 2º no llegó a connect
+    ck_assert_uint_eq(SOCKS5_REP_CONN_REFUSED, g_reply_rep); // red > local
+    ck_assert_int_eq(1, g_freeaddrinfo_calls);
+    ck_assert_int_eq(-1, s.origin_fd);
+}
+END_TEST
+
+START_TEST (test_connect_try_last_network_error_wins) {
+    // dos veredictos de red distintos: el REP refleja el último observado
+    // (ENETUNREACH → ECONNREFUSED ⇒ 0x05, no 0x03).
+    struct sockaddr_in a0, a1;
+    struct addrinfo    n0, n1;
+    init_ai(&n1, &a1, "127.0.0.2", 2222, NULL);
+    init_ai(&n0, &a0, "127.0.0.1", 1111, &n1);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = -1;
+    s.references                = 1;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+
+    struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_connect_script[0]  = (struct call_script){ .rc = -1, .err = ENETUNREACH };
+    g_connect_script[1]  = (struct call_script){ .rc = -1, .err = ECONNREFUSED };
+    g_connect_script_len = 2;
+    unsigned st = connect_try(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(2, g_connect_calls);
+    ck_assert_uint_eq(SOCKS5_REP_CONN_REFUSED, g_reply_rep);
+    ck_assert_int_eq(1, g_freeaddrinfo_calls);
+}
+END_TEST
+
 START_TEST (test_register_failure_replies_general_failure) {
     // candidato activo pero selector_register falla: no se toca references, el
     // origin_fd se cierra una sola vez y se responde 0x01 → REQUEST_WRITE.
@@ -475,6 +586,137 @@ START_TEST (test_getsockopt_failure_returns_error) {
     ck_assert_ptr_eq(head, s.origin_resolution_current);      // cursor sin avanzar
 
     freeaddrinfo(s.origin_resolution);
+}
+END_TEST
+
+START_TEST (test_connecting_soerror_retries_next_candidate) {
+    // el connect asíncrono del 1er candidato terminó mal (SO_ERROR) y hay otro
+    // candidato: connecting cierra y desregistra ese fd, avanza el cursor y
+    // reintenta con el siguiente, sin responderle nada al cliente todavía.
+    struct sockaddr_in a0, a1;
+    struct addrinfo    n0, n1;
+    init_ai(&n1, &a1, "127.0.0.2", 2222, NULL);
+    init_ai(&n0, &a0, "127.0.0.1", 1111, &n1);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = socket(AF_INET, SOCK_STREAM, 0);  // real: se cierra
+    s.references                = 2;   // client_fd + origin_fd registrados
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+    ck_assert_int_ne(-1, s.origin_fd);
+    const int old_fd = s.origin_fd;
+
+    struct selector_key key = { .s = NULL, .fd = s.origin_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;     // lista a mano: no liberable
+    g_soerr_script[0]  = ECONNREFUSED; // veredicto del 1er candidato
+    g_soerr_script_len = 1;
+    script_connect_ok();               // el connect del 2º es activo de entrada
+    unsigned st = connecting(&key);
+
+    ck_assert_uint_eq(CONNECTING, st);
+    ck_assert_int_eq(1, g_unregister_calls);             // el fd caído salió del selector
+    ck_assert_int_eq(old_fd, g_unregister_last_fd);
+    // hay un candidato nuevo en vuelo, registrado una vez (el número de fd
+    // puede repetirse: el kernel reusa el slot que liberó el close del 1º)
+    ck_assert_int_ne(-1, s.origin_fd);
+    ck_assert_int_eq(1, g_register_calls);
+    ck_assert_int_eq(0, g_reply_calls);                  // el cliente no vio nada
+    ck_assert_int_eq(0, g_freeaddrinfo_calls);           // la lista sigue viva
+    ck_assert_ptr_eq(&n1, s.origin_resolution_current);  // cursor avanzó al 2º
+    // el error del 1º quedó anotado como último veredicto de red
+    ck_assert_int_eq(ECONNREFUSED, s.orig.conn.last_error);
+    ck_assert(s.orig.conn.had_connect_error);
+    // references: el stub de unregister no corre handle_close (el decremento
+    // real pasa ahí), así que acá solo se ve el ++ del nuevo register: 2 → 3.
+    ck_assert_uint_eq(3, s.references);
+    // origin_addr es la del candidato activo (el 2º)
+    struct sockaddr_in *copied = (struct sockaddr_in *)&s.origin_addr;
+    ck_assert_uint_eq(inet_addr("127.0.0.2"), copied->sin_addr.s_addr);
+    ck_assert_uint_eq(htons(2222), copied->sin_port);
+
+    close(s.origin_fd);   // el fd real del 2º candidato quedó abierto
+}
+END_TEST
+
+START_TEST (test_connecting_soerror_last_candidate_replies_error) {
+    // el connect asíncrono falló y no quedan candidatos: REPLY de error al
+    // cliente, lista liberada exactamente una vez y origen limpio.
+    struct sockaddr_in a0;
+    struct addrinfo    n0;
+    init_ai(&n0, &a0, "127.0.0.1", 1111, NULL);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = socket(AF_INET, SOCK_STREAM, 0);
+    s.references                = 2;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+    ck_assert_int_ne(-1, s.origin_fd);
+    const int old_fd = s.origin_fd;
+
+    struct selector_key key = { .s = NULL, .fd = s.origin_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_soerr_script[0]  = ETIMEDOUT;
+    g_soerr_script_len = 1;
+    unsigned st = connecting(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, g_reply_rep);   // ETIMEDOUT → 0x04
+    ck_assert_int_eq(OP_WRITE, g_setinterest_last);                // cliente a escribir
+    ck_assert_int_eq(1, g_unregister_calls);
+    ck_assert_int_eq(old_fd, g_unregister_last_fd);
+    ck_assert_int_eq(-1, s.origin_fd);
+    ck_assert_int_eq(1, g_freeaddrinfo_calls);          // liberada exactamente una vez
+    ck_assert_ptr_eq(&n0, g_freeaddrinfo_last);         // ...y era la cabeza de la lista
+    ck_assert_ptr_null(s.origin_resolution);
+    ck_assert_ptr_null(s.origin_resolution_current);
+}
+END_TEST
+
+START_TEST (test_connecting_success_replies_succeeded) {
+    // smoke del flujo completo de éxito: SO_ERROR = 0 ⇒ REPLY 0x00, la lista
+    // se libera, el origin_fd queda vivo (y registrado) para el relay.
+    struct sockaddr_in a0;
+    struct addrinfo    n0;
+    init_ai(&n0, &a0, "127.0.0.1", 1111, NULL);
+
+    struct socks5 s;
+    memset(&s, 0, sizeof(s));
+    s.client_fd                 = 100;
+    s.origin_fd                 = socket(AF_INET, SOCK_STREAM, 0);
+    s.references                = 2;
+    s.origin_resolution         = &n0;
+    s.origin_resolution_current = &n0;
+    ck_assert_int_ne(-1, s.origin_fd);
+    const int old_fd = s.origin_fd;
+
+    struct selector_key key = { .s = NULL, .fd = s.origin_fd, .data = &s };
+
+    reset_injection();
+    g_freeaddrinfo_capture = true;
+    g_soerr_script[0]  = 0;            // el connect terminó bien
+    g_soerr_script_len = 1;
+    unsigned st = connecting(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(1, g_reply_calls);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCEEDED, g_reply_rep);
+    ck_assert_int_eq(OP_WRITE, g_setinterest_last);     // cliente a escribir el REPLY
+    ck_assert_int_eq(0, g_unregister_calls);            // el origen sigue registrado
+    ck_assert_int_eq(old_fd, s.origin_fd);              // ...y es el mismo fd
+    ck_assert_int_eq(1, g_freeaddrinfo_calls);          // la lista ya no hace falta
+    ck_assert_ptr_null(s.origin_resolution);
+    ck_assert_uint_eq(2, s.references);                 // sin cambios
+
+    close(s.origin_fd);
 }
 END_TEST
 
@@ -674,9 +916,15 @@ suite(void) {
     tcase_add_test(tc, test_bnd_from_bound_socket_ipv6);
     tcase_add_test(tc, test_bnd_degrades_on_bad_fd);
     tcase_add_test(tc, test_connect_retry_second_candidate);
+    tcase_add_test(tc, test_connect_try_all_refused_replies_conn_refused);
+    tcase_add_test(tc, test_connect_try_network_verdict_beats_local_error);
+    tcase_add_test(tc, test_connect_try_last_network_error_wins);
     tcase_add_test(tc, test_register_failure_replies_general_failure);
     tcase_add_test(tc, test_setinterest_failure_returns_error);
     tcase_add_test(tc, test_getsockopt_failure_returns_error);
+    tcase_add_test(tc, test_connecting_soerror_retries_next_candidate);
+    tcase_add_test(tc, test_connecting_soerror_last_candidate_replies_error);
+    tcase_add_test(tc, test_connecting_success_replies_succeeded);
     tcase_add_test(tc, test_errno_to_rep);
     tcase_add_test(tc, test_gai_error_to_rep);
     tcase_add_test(tc, test_resolve_done_error_replies_host_unreachable);
