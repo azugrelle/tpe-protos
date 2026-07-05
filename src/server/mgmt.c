@@ -24,6 +24,7 @@
 
 #include "buffer.h"
 #include "stm.h"
+#include "config.h"
 #include "metrics.h"
 #include "include/mgmt.h"
 
@@ -450,6 +451,85 @@ cmd_connections(struct selector_key *key, unsigned state, char *args) {
 }
 
 /**
+ * parsea un entero decimal ESTRICTO en [1, max]: solo dígitos ASCII, al menos
+ * uno, sin signo, espacios ni sufijos, y sin desbordar. Deja el valor en *out
+ * y devuelve true; false ante cualquier desvío. No se usa atoi/strtoul porque
+ * son demasiado permisivos para el protocolo: "30abc", " 30", "+30" o "-1"
+ * tienen que rechazarse con `-ERR invalid value', no interpretarse.
+ */
+static bool
+parse_positive_int(const char *s, unsigned long max, unsigned long *out) {
+    if(s == NULL || *s == '\0') {
+        return false;
+    }
+    unsigned long v = 0;
+    for(; *s != '\0'; s++) {
+        if(*s < '0' || *s > '9') {
+            return false;
+        }
+        const unsigned d = (unsigned)(*s - '0');
+        // ¿v*10 + d superaría max? chequeado ANTES de multiplicar para que
+        // valores gigantes fallen por rango y no por overflow silencioso
+        if(v > max / 10 || (v == max / 10 && d > max % 10)) {
+            return false;
+        }
+        v = v * 10 + d;
+    }
+    if(v == 0) {   // "0" (o "000") no es un entero positivo
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+/**
+ * CONFIG <param> <valor> -- ajusta un parámetro en runtime. Solo guarda el
+ * valor en el módulo config (memoria, sin persistencia); el proxy lo lee al
+ * crear conexiones nuevas, las vivas no cambian. Respuesta de una sola línea.
+ */
+static unsigned
+cmd_config(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    // param = hasta el primer espacio; value = el resto CRUDO (mismo criterio
+    // de split que el dispatch). Si falta cualquiera de los dos tokens los
+    // argumentos están mal formados; si sobran ("timeout 30 40") el espacio
+    // extra queda dentro de value y lo rechaza la validación numérica.
+    char *value = (args == NULL) ? NULL : strchr(args, ' ');
+    if(value == NULL) {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+    *value++ = '\0';
+    if(args[0] == '\0' || value[0] == '\0') {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    // primero se resuelve el param y recién después se valida el valor: así
+    // "CONFIG foo 30" da `unknown param' y no `invalid value'
+    unsigned long v;
+    if(strcmp(args, "timeout") == 0) {
+        if(!parse_positive_int(value, CONFIG_TIMEOUT_MAX, &v)) {
+            mgmt_queue_line(s, "-ERR invalid value");
+            return state;
+        }
+        config_set_timeout((unsigned)v);
+    } else if(strcmp(args, "buf_size") == 0) {
+        if(!parse_positive_int(value, CONFIG_BUF_SIZE_MAX, &v)) {
+            mgmt_queue_line(s, "-ERR invalid value");
+            return state;
+        }
+        config_set_buf_size((size_t)v);
+    } else {
+        mgmt_queue_line(s, "-ERR unknown param");
+        return state;
+    }
+    mgmt_queue_line(s, "+OK");
+    return state;
+}
+
+/**
  * stub para los comandos cuya lógica llega en tareas posteriores: el nombre
  * ya se reconoce (y exige autenticación) pero todavía no hacen nada. La
  * validación de argumentos de cada uno también llega con su implementación.
@@ -467,8 +547,7 @@ static const struct mgmt_cmd mgmt_commands[] = {
     { .name = "STATS",       .requires_auth = true,  .handler = cmd_stats           },
     { .name = "USERS",       .requires_auth = true,  .handler = cmd_users           },
     { .name = "CONNECTIONS", .requires_auth = true,  .handler = cmd_connections     },
-    // TODO(T53): CONFIG -- configuración de parámetros en runtime
-    { .name = "CONFIG",      .requires_auth = true,  .handler = cmd_not_implemented },
+    { .name = "CONFIG",      .requires_auth = true,  .handler = cmd_config          },
     // TODO(T70): ADD_USER/DEL_USER -- alta y baja de usuarios del proxy
     { .name = "ADD_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
     { .name = "DEL_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
