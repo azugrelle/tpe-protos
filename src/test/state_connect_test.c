@@ -14,14 +14,31 @@
 // Stubs de los símbolos externos que referencia state_connect.c, gobernados por
 // globals para inyectar fallos. `reset_injection' los deja en su valor neutro.
 
+/* resultado scripteado para la llamada n-ésima a un syscall interceptado */
+struct call_script {
+    int rc;
+    int err;   // errno (connect) o SO_ERROR (getsockopt)
+};
+#define SCRIPT_MAX 4
+
 static int     g_register_calls    = 0;  // intentos de selector_register
 static bool    g_register_fail     = false;
 static bool    g_setinterest_fail  = false;
 static int     g_reply_calls       = 0;  // llamadas a request_reply
 static uint8_t g_reply_rep         = 0;  // último REP serializado
-static bool    g_inject            = false;  // habilita el script de connect()
+// guion de connect(): entrada por llamada; len 0 = passthrough al real. Más
+// llamadas que entradas repiten la última (p.ej. "todo conecta" con una sola).
+static struct call_script g_connect_script[SCRIPT_MAX];
+static int     g_connect_script_len = 0;
 static int     g_connect_calls     = 0;
-static int     g_connect_fail_until = 0;  // connect() falla mientras call <= este
+// guion de getsockopt(SO_ERROR): valores a devolver por llamada; len 0 = real
+static int     g_soerr_script[SCRIPT_MAX];
+static int     g_soerr_script_len  = 0;
+static int     g_soerr_calls       = 0;
+// freeaddrinfo(): en modo captura no libera (listas artesanales, no liberables)
+static bool    g_freeaddrinfo_capture = false;
+static int     g_freeaddrinfo_calls   = 0;
+static struct addrinfo *g_freeaddrinfo_last = NULL;
 static int     g_notify_calls      = 0;   // notificaciones de bloqueo
 static int     g_notify_fd         = -1;  // fd de la última notificación
 static struct blocking_job *g_notify_job = NULL;
@@ -31,20 +48,31 @@ static void   *g_pthread_arg       = NULL; // arg capturado en modo 2
 
 static void
 reset_injection(void) {
-    g_register_calls     = 0;
-    g_register_fail      = false;
-    g_setinterest_fail   = false;
-    g_reply_calls        = 0;
-    g_reply_rep          = 0;
-    g_inject             = false;
-    g_connect_calls      = 0;
-    g_connect_fail_until = 0;
-    g_notify_calls       = 0;
-    g_notify_fd          = -1;
-    g_notify_job         = NULL;
-    g_setinterest_last   = -1;
-    g_pthread_mode       = 0;
-    g_pthread_arg        = NULL;
+    g_register_calls      = 0;
+    g_register_fail       = false;
+    g_setinterest_fail    = false;
+    g_reply_calls         = 0;
+    g_reply_rep           = 0;
+    g_connect_script_len  = 0;
+    g_connect_calls       = 0;
+    g_soerr_script_len    = 0;
+    g_soerr_calls         = 0;
+    g_freeaddrinfo_capture = false;
+    g_freeaddrinfo_calls   = 0;
+    g_freeaddrinfo_last    = NULL;
+    g_notify_calls        = 0;
+    g_notify_fd           = -1;
+    g_notify_job          = NULL;
+    g_setinterest_last    = -1;
+    g_pthread_mode        = 0;
+    g_pthread_arg         = NULL;
+}
+
+/* atajo para el guion más común: connect() exitoso de entrada */
+static void
+script_connect_ok(void) {
+    g_connect_script[0]  = (struct call_script){ .rc = 0, .err = 0 };
+    g_connect_script_len = 1;
 }
 
 int
@@ -71,22 +99,59 @@ selector_register(fd_selector s, const int fd, const fd_handler *handler,
     return g_register_fail ? SELECTOR_MAXFD : SELECTOR_SUCCESS;
 }
 
-// connect() se intercepta con --wrap: por defecto delega en el real; cuando el
-// test enciende g_inject, falla (ECONNREFUSED) mientras el nº de llamada sea
-// <= g_connect_fail_until, y a partir de ahí devuelve éxito inmediato.
+// connect() se intercepta con --wrap: sin guion delega en el real; con guion,
+// la llamada n-ésima devuelve el rc/errno de la entrada n (la última entrada
+// se repite si hay más llamadas que entradas).
 extern int __real_connect(int fd, const struct sockaddr *addr, socklen_t len);
 
 int
 __wrap_connect(int fd, const struct sockaddr *addr, socklen_t len) {
-    if(!g_inject) {
+    if(g_connect_script_len == 0) {
         return __real_connect(fd, addr, len);
     }
-    g_connect_calls++;
-    if(g_connect_calls <= g_connect_fail_until) {
-        errno = ECONNREFUSED;
-        return -1;
+    int i = g_connect_calls;
+    if(i >= g_connect_script_len) {
+        i = g_connect_script_len - 1;
     }
+    g_connect_calls++;
+    errno = g_connect_script[i].err;
+    return g_connect_script[i].rc;
+}
+
+// getsockopt() se intercepta con --wrap: sin guion delega en el real; con
+// guion, cada consulta de SO_ERROR devuelve el valor scripteado n-ésimo (la
+// última entrada se repite). Otras opciones siempre van al real.
+extern int __real_getsockopt(int fd, int level, int optname, void *optval,
+                             socklen_t *optlen);
+
+int
+__wrap_getsockopt(int fd, int level, int optname, void *optval,
+                  socklen_t *optlen) {
+    if(g_soerr_script_len == 0 || level != SOL_SOCKET || optname != SO_ERROR) {
+        return __real_getsockopt(fd, level, optname, optval, optlen);
+    }
+    int i = g_soerr_calls;
+    if(i >= g_soerr_script_len) {
+        i = g_soerr_script_len - 1;
+    }
+    g_soerr_calls++;
+    *(int *)optval = g_soerr_script[i];
     return 0;
+}
+
+// freeaddrinfo() se intercepta con --wrap: por defecto delega en el real; en
+// modo captura solo cuenta y guarda el puntero, sin liberar. Los tests que
+// pueden terminar en connect_fail con una lista armada a mano (nodos de stack,
+// no liberables) lo necesitan, y de paso asertan "liberada exactamente una vez".
+extern void __real_freeaddrinfo(struct addrinfo *res);
+
+void
+__wrap_freeaddrinfo(struct addrinfo *res) {
+    g_freeaddrinfo_calls++;
+    g_freeaddrinfo_last = res;
+    if(!g_freeaddrinfo_capture) {
+        __real_freeaddrinfo(res);
+    }
 }
 
 selector_status
@@ -309,7 +374,10 @@ START_TEST (test_connect_retry_second_candidate) {
     struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
 
     reset_injection();
-    g_inject = true; g_connect_fail_until = 1;   // 1er candidato falla, 2º conecta
+    // 1er candidato falla, 2º conecta
+    g_connect_script[0]  = (struct call_script){ .rc = -1, .err = ECONNREFUSED };
+    g_connect_script[1]  = (struct call_script){ .rc = 0,  .err = 0 };
+    g_connect_script_len = 2;
     unsigned st = connect_try(&key);
 
     ck_assert_uint_eq(CONNECTING, st);
@@ -342,7 +410,7 @@ START_TEST (test_register_failure_replies_general_failure) {
     struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
 
     reset_injection();
-    g_inject = true; g_connect_fail_until = 0;  // connect activo de entrada
+    script_connect_ok();
     g_register_fail = true;
     unsigned st = connect_try(&key);
 
@@ -370,7 +438,7 @@ START_TEST (test_setinterest_failure_returns_error) {
     struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
 
     reset_injection();
-    g_inject = true; g_connect_fail_until = 0;
+    script_connect_ok();
     g_setinterest_fail = true;
     unsigned st = connect_try(&key);
 
@@ -468,7 +536,7 @@ START_TEST (test_resolve_done_success_goes_connecting) {
     struct selector_key key = { .s = NULL, .fd = s.client_fd, .data = &s };
 
     reset_injection();
-    g_inject = true; g_connect_fail_until = 0;
+    script_connect_ok();
     ck_assert_uint_eq(CONNECTING, resolve_done(&key));
     ck_assert_ptr_eq(s.origin_resolution, s.origin_resolution_current);
     ck_assert_uint_eq(2, s.references);
