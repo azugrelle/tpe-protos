@@ -107,14 +107,24 @@ CURL_PID=$!
 
 sleep 1   # a esta velocidad la transferencia recien empieza
 kill -TERM "$PROXY_PID"
-sleep 0.3 # que el proxy procese la senal antes de probar el rechazo
 
-if python3 -c "import socket,sys
-s = socket.socket(); s.settimeout(2)
+# poll con deadline: fallar solo si pasado el plazo el proxy SIGUE aceptando
+# (un chequeo unico con sleep fijo es carrera contra el procesamiento de la
+# senal en una maquina cargada)
+refused=0
+for _ in $(seq 1 20); do
+    if ! python3 -c "import socket,sys
+s = socket.socket(); s.settimeout(0.5)
 try: s.connect((\"127.0.0.1\", $PROXY_PORT))
 except OSError: sys.exit(1)
-sys.exit(0)"; then
-    echo "FALLO: el proxy acepto una conexion nueva durante el drenado" >&2
+s.close(); sys.exit(0)"; then
+        refused=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$refused" -ne 1 ]; then
+    echo "FALLO: el proxy siguio aceptando conexiones nuevas tras la 1ra senal" >&2
     exit 1
 fi
 echo "drenado: conexion nueva rechazada tras la 1ra senal"

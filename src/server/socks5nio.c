@@ -130,6 +130,10 @@ finally:
  * del origen. Corre al cerrar la última referencia, tanto antes de encolar en el
  * pool como al destruir de verdad, para que el `addrinfo' no se filtre si la
  * estructura se reutiliza (el pool no pasa por `socks5_destroy_'). Idempotente.
+ *
+ * Regla: todo recurso por-conexión se libera ACÁ. Los `on_departure' de la STM
+ * no corren en el apagado (ni en el barrido de handshakes ni en el teardown de
+ * selector_destroy), así que liberar algo solo en un on_departure lo fugaría.
  */
 static void
 socks5_cleanup(struct socks5 *s) {

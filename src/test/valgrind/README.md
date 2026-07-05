@@ -86,14 +86,18 @@ Mismos códigos de salida que los anteriores.
 
 Audita el **apagado ordenado** en sus dos caminos, con una mezcla de
 conexiones vivas armada por `driver_shutdown.py`: varias en pleno `COPY`, una
-a medio HELLO, una sesión de monitoreo sostenida y (en el caso de drenado) una
-en `RESOLVING` con el shim de DNS lento precargado:
+a medio HELLO, una sesión de monitoreo sostenida y una en `RESOLVING` con el
+shim de DNS lento precargado (el runner sincroniza las señales con la línea
+de "ready" del driver para caer siempre dentro de la ventana de 3s):
 
 - **drenado (1 señal):** el server cierra pasivos y handshakes, la resolución
   tardía se cierra al notificar, y cuando el driver suelta las `COPY` el
   proceso sale **solo** con `exit 0`.
-- **corte forzado (2 señales):** con las `COPY` y la sesión de mgmt aún vivas,
-  la segunda señal corta ya, también con `exit 0`.
+- **corte forzado (2 señales):** con las `COPY`, la sesión de mgmt y el
+  `getaddrinfo` aún en vuelo, la segunda señal corta ya (también `exit 0`);
+  cubre el camino más delicado del teardown: el `finally` espera al worker de
+  DNS y `selector_destroy` drena el job de notificación pendiente **antes**
+  del unregister que libera la conexión.
 
 A diferencia de los otros `leak_*`, acá los `FILE DESCRIPTORS` **sí son parte
 del veredicto**: el teardown cierra los fds de toda conexión viva (los cierra

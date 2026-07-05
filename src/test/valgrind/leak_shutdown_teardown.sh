@@ -27,6 +27,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 DRIVER="$HERE/driver_shutdown.py"
 SHIM="$(mktemp --suffix=.so)"
+DRV_OUT="$(mktemp)"
 LOG=""
 VG=""
 DRV=""
@@ -34,7 +35,7 @@ DRV=""
 cleanup() {
     [ -z "$DRV" ] || kill "$DRV" 2>/dev/null || true
     [ -z "$VG" ] || kill -9 "$VG" 2>/dev/null || true
-    rm -f "$SHIM" "${LOG:-}"
+    rm -f "$SHIM" "$DRV_OUT" "${LOG:-}"
 }
 trap cleanup EXIT INT TERM
 
@@ -63,6 +64,17 @@ wait_exit() {
     return 0
 }
 
+# espera la linea de "ready" del driver en su salida (todo establecido, la
+# ventana de RESOLVING recien abierta); falla si el driver murio antes
+wait_ready() {
+    for _ in $(seq 1 300); do
+        grep -q "driver: .* modo " "$DRV_OUT" && return 0
+        kill -0 "$DRV" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
 # veredicto sobre el log de un caso: cero fugas, cero errores, y ningun fd
 # abierto al salir mas alla de los std y el log de valgrind
 check_log() {
@@ -70,19 +82,27 @@ check_log() {
     echo "===== resumen valgrind ($name) ====="
     grep -E "FILE DESCRIPTORS|definitely lost|indirectly lost|no leaks are possible|ERROR SUMMARY" "$log"
 
-    local leaks errors fds
+    local leaks errors fd_line open std
     leaks="$(grep -oE "(definitely|indirectly) lost: [0-9,]+ bytes" "$log" \
                  | grep -vE ": 0 bytes")"
     errors="$(grep -oE "ERROR SUMMARY: [0-9]+ errors" "$log" | grep -vE ": 0 errors")"
-    # "FILE DESCRIPTORS: N open (M std) at exit": N-M debe ser <= 1 (el log)
-    fds="$(grep -oE "FILE DESCRIPTORS: [0-9]+ open \([0-9]+ std\)" "$log" \
-               | grep -oE "[0-9]+" | paste -sd- | bc)"
     if [ -n "$leaks" ] || [ -n "$errors" ]; then
         echo "FALLO ($name): valgrind reporto fugas/errores" >&2
         return 1
     fi
-    if [ -z "$fds" ] || [ "$fds" -gt 1 ]; then
-        echo "FALLO ($name): quedaron fds abiertos al salir (open-std=$fds)" >&2
+    # "FILE DESCRIPTORS: N open (M std) at exit": N-M debe ser <= 1 (el log de
+    # valgrind). Si el formato no aparece (valgrind viejo), fallar explicito en
+    # vez de dar un veredicto vacio.
+    fd_line="$(grep -oE "FILE DESCRIPTORS: [0-9]+ open \([0-9]+ std\)" "$log" | head -1)"
+    if [ -z "$fd_line" ]; then
+        echo "FALLO ($name): no encontre 'FILE DESCRIPTORS: N open (M std)' en el log" >&2
+        echo "  (¿valgrind sin ese formato de --track-fds? se necesita para el veredicto)" >&2
+        return 1
+    fi
+    open="$(echo "$fd_line" | grep -oE "[0-9]+" | sed -n 1p)"
+    std="$(echo "$fd_line"  | grep -oE "[0-9]+" | sed -n 2p)"
+    if [ $((open - std)) -gt 1 ]; then
+        echo "FALLO ($name): quedaron fds abiertos al salir (open-std=$((open - std)))" >&2
         return 1
     fi
     return 0
@@ -105,11 +125,13 @@ start_server() {
 start_server
 LOG_DRAIN="$LOG"
 
-python3 "$DRIVER" "$PORT" "$MGMT_PORT" drain &
+: > "$DRV_OUT"
+python3 "$DRIVER" "$PORT" "$MGMT_PORT" drain > "$DRV_OUT" 2>&1 &
 DRV=$!
-sleep 4     # las COPY ya estan firmes; la RESOLVING sigue en su ventana de 3s
-kill -0 "$DRV" 2>/dev/null \
-    || { wait "$DRV"; echo "fallo el driver (drain)" >&2; exit 2; }
+# esperar el "ready" (todo establecido; la ventana de 3s de la RESOLVING
+# recien abre) y señalar enseguida, adentro de la ventana
+wait_ready || { cat "$DRV_OUT" >&2; echo "fallo el driver (drain)" >&2; exit 2; }
+sleep 0.5
 
 kill -TERM "$VG" 2>/dev/null
 # el driver suelta las COPY solo; el server debe salir sin mas ayuda
@@ -129,14 +151,17 @@ echo "drain: salio solo con exit 0 y sin fugas ni fds"
 start_server
 LOG_FORCE="$LOG"
 
-python3 "$DRIVER" "$PORT" "$MGMT_PORT" force &
+: > "$DRV_OUT"
+python3 "$DRIVER" "$PORT" "$MGMT_PORT" force > "$DRV_OUT" 2>&1 &
 DRV=$!
-sleep 4
-kill -0 "$DRV" 2>/dev/null \
-    || { wait "$DRV"; echo "fallo el driver (force)" >&2; exit 2; }
+wait_ready || { cat "$DRV_OUT" >&2; echo "fallo el driver (force)" >&2; exit 2; }
 
-kill -TERM "$VG" 2>/dev/null   # entra en drenado: las COPY siguen vivas
-sleep 1.5
+# ambas señales adentro de la ventana de 3s de la RESOLVING: la 2ª cae con el
+# getaddrinfo aun en vuelo, asi el finally espera al worker y selector_destroy
+# drena el job de notificacion pendiente antes de liberar la conexion
+sleep 0.5
+kill -TERM "$VG" 2>/dev/null   # entra en drenado: COPY y mgmt siguen vivas
+sleep 1
 kill -TERM "$VG" 2>/dev/null   # corte forzado
 if ! wait_exit "$VG" 20; then
     echo "FALLO (force): el server no salio tras la 2da señal" >&2

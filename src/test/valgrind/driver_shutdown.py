@@ -10,9 +10,11 @@ SOSTIENE mientras el runner señala al server:
     señal la cierra (no hay transferencia que drenar).
   - 1 sesión de monitoreo (TCP al puerto de mgmt, sostenida): el teardown
     tiene que cerrar su fd también.
-  - solo en modo drain: 1 CONNECT a un FQDN "slow*" (el shim de DNS duerme 3s):
-    si la señal cae en esa ventana, la conexión está en RESOLVING, el barrido
-    la saltea y la cierra resolve_done al notificar.
+  - 1 CONNECT a un FQDN "slow*" (el shim de DNS duerme 3s), en ambos modos:
+    en drain, si la señal cae en esa ventana el barrido la saltea y la cierra
+    resolve_done al notificar; en force, la 2ª señal cae con el getaddrinfo
+    aún en vuelo y cubre el camino más delicado del teardown (el job de
+    notificación embebido se drena antes del unregister que libera el struct).
 
 Modos:
   drain: sostiene las COPY unos segundos y después cierra todo ordenadamente,
@@ -98,20 +100,20 @@ try:
 except OSError as e:
     print(f"driver: mgmt: {e}", file=sys.stderr)
 
-# ultima, para que su ventana de 3s de RESOLVING cubra la señal del runner
-if MODE == "drain":
-    try:
-        r = socket.create_connection((PROXY_HOST, PROXY_PORT), timeout=15)
-        r.settimeout(15)
-        r.sendall(b"\x05\x01\x00")
-        if recv_exact(r, 2) != b"\x05\x00":
-            raise OSError("hello rechazado (slow)")
-        host = b"slow.test"
-        r.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host
-                  + struct.pack("!H", 80))
-        extras.append(r)
-    except OSError as e:
-        print(f"driver: resolving: {e}", file=sys.stderr)
+# ultima, justo antes del "ready": asi la ventana de 3s de RESOLVING recien
+# arranca cuando el runner ve la linea y manda la(s) señal(es)
+try:
+    r = socket.create_connection((PROXY_HOST, PROXY_PORT), timeout=15)
+    r.settimeout(15)
+    r.sendall(b"\x05\x01\x00")
+    if recv_exact(r, 2) != b"\x05\x00":
+        raise OSError("hello rechazado (slow)")
+    host = b"slow.test"
+    r.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host
+              + struct.pack("!H", 80))
+    extras.append(r)
+except OSError as e:
+    print(f"driver: resolving: {e}", file=sys.stderr)
 
 print(f"driver: {len(held)} en COPY + {len(extras)} extras, modo {MODE}",
       flush=True)
