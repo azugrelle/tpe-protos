@@ -46,12 +46,9 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/stm_test \
       $(TEST_FOLDER)/request_parser_test \
       $(TEST_FOLDER)/state_connect_test \
-<<<<<<< HEAD
       $(TEST_FOLDER)/state_copy_test \
       $(TEST_FOLDER)/state_request_test
-=======
       $(TEST_FOLDER)/metrics_test
->>>>>>> 3b68131 (access log por usuario)
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
