@@ -28,6 +28,7 @@
 #include "../shared/selector.h"
 #include "../shared/metrics.h"
 #include "socks5nio.h"
+#include "states/include/state_connect.h"   // resolve_shutdown_wait
 #include "mgmt.h"
 #include "args.h"
 #include "utils/include/user_auth_utils.h"
@@ -205,6 +206,9 @@ finally:
         perror(err_msg);
         ret = 1;
     }
+    // ningún hilo de resolución puede seguir vivo cuando se destruyan el
+    // selector y las conexiones: uno tardío escribiría sobre memoria liberada.
+    resolve_shutdown_wait();
     if(selector != NULL) {
         selector_destroy(selector);
     }

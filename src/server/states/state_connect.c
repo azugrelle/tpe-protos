@@ -366,6 +366,15 @@ resolve_start(struct selector_key *key) {
     return RESOLVING;
 }
 
+void
+resolve_shutdown_wait(void) {
+    pthread_mutex_lock(&resolve_mutex);
+    while(resolve_inflight != 0) {
+        pthread_cond_wait(&resolve_idle, &resolve_mutex);
+    }
+    pthread_mutex_unlock(&resolve_mutex);
+}
+
 /**
  * on_block_ready de RESOLVING (sobre client_fd): la resolución terminó y el
  * resultado está en `resolve_gai' / `origin_resolution'. En éxito posiciona

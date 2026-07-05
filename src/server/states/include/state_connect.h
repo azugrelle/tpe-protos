@@ -47,6 +47,14 @@ unsigned resolve_start(struct selector_key *key);
 unsigned resolve_done(struct selector_key *key);
 
 /**
+ * espera a que no quede ningún hilo de resolución vivo. Llamarla al salir del
+ * loop del selector y ANTES de destruir el selector, las conexiones o el
+ * pool: un hilo tardío escribiría sobre memoria liberada y notificaría sobre
+ * un mutex destruido. Con ninguna resolución en vuelo retorna de inmediato.
+ */
+void resolve_shutdown_wait(void);
+
+/**
  * handler on_write_ready de CONNECTING, sobre origin_fd: se dispara cuando el
  * selector marca al origen como escribible (el connect no bloqueante terminó).
  */
