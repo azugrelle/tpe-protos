@@ -545,12 +545,15 @@ mgmt_write(struct selector_key *key) {
     }
 }
 
+// el fd lo cierra el handle_close (misma regla que socksv5_close): así el
+// teardown del selector también cierra las sesiones de monitoreo aún vivas.
 static void
 mgmt_close(struct selector_key *key) {
+    close(key->fd);
     mgmt_session_destroy(MGMT_ATTACHMENT(key));
 }
 
-/** cierre centralizado: desregistrar dispara mgmt_close, que libera */
+/** cierre centralizado: desregistrar dispara mgmt_close, que cierra y libera */
 static void
 mgmt_done(struct selector_key *key) {
     const int fd = MGMT_ATTACHMENT(key)->client_fd;
@@ -558,7 +561,6 @@ mgmt_done(struct selector_key *key) {
         if(SELECTOR_SUCCESS != selector_unregister_fd(key->s, fd)) {
             abort();
         }
-        close(fd);
     }
 }
 

@@ -319,8 +319,14 @@ socksv5_block(struct selector_key *key) {
     }
 }
 
+/**
+ * el fd registrado lo cierra su handle_close, no quien desregistra: así
+ * selector_destroy también cierra los fds de las conexiones que sigan vivas
+ * en el teardown (antes solo liberaba la estructura y los filtraba).
+ */
 static void
 socksv5_close(struct selector_key *key) {
+    close(key->fd);
     socks5_destroy(ATTACHMENT(key));
 }
 
@@ -332,10 +338,10 @@ socksv5_done(struct selector_key* key) {
     };
     for(unsigned i = 0; i < N(fds); i++) {
         if(fds[i] != -1) {
+            // el unregister dispara socksv5_close, que cierra el fd
             if(SELECTOR_SUCCESS != selector_unregister_fd(key->s, fds[i])) {
                 abort();
             }
-            close(fds[i]);
         }
     }
 }

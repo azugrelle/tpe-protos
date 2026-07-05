@@ -118,9 +118,10 @@ connect_resolve(struct socks5 *s) {
 // del origin_fd / addrinfo / references entre los muchos caminos de error.
 
 /**
- * cierra el origin_fd: si `registered' lo desregistra del selector (que es el
- * único decremento de `references') y lo cierra; si no, solo lo cierra. No-op
- * si ya vale -1. Deja siempre origin_fd en -1.
+ * cierra el origin_fd: si `registered' lo desregistra del selector, y es el
+ * handle_close disparado por el unregister quien cierra el fd (y decrementa
+ * `references'); si no está registrado no hay handle_close que lo cubra, así
+ * que se cierra acá. No-op si ya vale -1. Deja siempre origin_fd en -1.
  */
 static void
 connect_close_origin(struct socks5 *s, fd_selector sel, bool registered) {
@@ -129,8 +130,9 @@ connect_close_origin(struct socks5 *s, fd_selector sel, bool registered) {
     }
     if(registered) {
         selector_unregister_fd(sel, s->origin_fd);
+    } else {
+        close(s->origin_fd);
     }
-    close(s->origin_fd);
     s->origin_fd = -1;
 }
 

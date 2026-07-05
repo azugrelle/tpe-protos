@@ -82,7 +82,8 @@ main(const int argc, char **argv) {
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port        = htons(args.socks_port);
 
-    const int server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    // no-const: el drenado lo cierra y lo blanquea a -1 antes del finally
+    int server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(server < 0) {
         err_msg = "unable to create socket";
         goto finally;
@@ -220,7 +221,26 @@ main(const int argc, char **argv) {
         goto finally;
     }
 
-    for(;sig_count == 0;) {
+    bool draining = false;
+    for(;;) {
+        // 1ª señal: dejar de aceptar conexiones nuevas (cerrar ambos pasivos)
+        // y drenar las activas. Blanquearlos a -1 deja el finally idempotente:
+        // sin eso lo cerraría de nuevo, y el número de fd pudo reciclarse.
+        if(sig_count > 0 && !draining) {
+            draining = true;
+            fprintf(stdout, "termination signal: draining active connections\n");
+            selector_unregister_fd(selector, server);
+            close(server);
+            server = -1;
+            selector_unregister_fd(selector, mng_server);
+            close(mng_server);
+            mng_server = -1;
+        }
+        // 2ª señal: corte inmediato, el finally cierra lo que siga vivo.
+        // Drenado completo: no queda ninguna conexión SOCKS5 activa.
+        if(sig_count >= 2 || (draining && socksv5_live_count() == 0)) {
+            break;
+        }
         err_msg = NULL;
         ss = selector_select(selector);
         if(ss != SELECTOR_SUCCESS) {
@@ -228,9 +248,8 @@ main(const int argc, char **argv) {
             goto finally;
         }
     }
-    if(err_msg == NULL) {
-        err_msg = "closing";
-    }
+    // salida por señal: apagado pedido, no un error (exit 0)
+    fprintf(stdout, "clean shutdown\n");
 
     int ret = 0;
 finally:
