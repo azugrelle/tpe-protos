@@ -26,6 +26,43 @@ static const unsigned  max_pool  = 50;
 static unsigned        pool_size = 0;
 static struct socks5 * pool      = 0;
 
+/**
+ * lista de conexiones vivas (alta en `socks5_new', baja al morir la última
+ * referencia). El drenado del apagado la consulta para saber cuándo terminó.
+ */
+static struct socks5 * live_head  = NULL;
+static unsigned        live_count = 0;
+
+static void
+socks5_live_link(struct socks5 *s) {
+    s->live_prev = NULL;
+    s->live_next = live_head;
+    if(live_head != NULL) {
+        live_head->live_prev = s;
+    }
+    live_head  = s;
+    live_count++;
+}
+
+static void
+socks5_live_unlink(struct socks5 *s) {
+    if(s->live_prev != NULL) {
+        s->live_prev->live_next = s->live_next;
+    } else {
+        live_head = s->live_next;
+    }
+    if(s->live_next != NULL) {
+        s->live_next->live_prev = s->live_prev;
+    }
+    s->live_next = s->live_prev = NULL;
+    live_count--;
+}
+
+unsigned
+socksv5_live_count(void) {
+    return live_count;
+}
+
 static const struct state_definition *
 socks5_describe_states(void);
 
@@ -64,6 +101,8 @@ socks5_new(int client_fd) {
     buffer_init(&ret->write_buffer, N(ret->raw_buff_b), ret->raw_buff_b);
 
     ret->references = 1;
+
+    socks5_live_link(ret);
 finally:
     return ret;
 }
@@ -99,8 +138,11 @@ socks5_destroy(struct socks5 *s) {
     if(s == NULL) {
         // nada para hacer
     } else if(s->references == 1) {
-        // última referencia: liberar recursos por-conexión antes de poolear,
-        // porque el pool reutiliza la estructura sin pasar por socks5_destroy_.
+        // última referencia: la conexión deja de estar viva (el camino de
+        // references -= 1 no toca la lista: todavía queda quien la use).
+        socks5_live_unlink(s);
+        // liberar recursos por-conexión antes de poolear, porque el pool
+        // reutiliza la estructura sin pasar por socks5_destroy_.
         socks5_cleanup(s);
         if(pool_size < max_pool) {
             s->next = pool;

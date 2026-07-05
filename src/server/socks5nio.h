@@ -19,4 +19,8 @@ socks5_handler_ref(void);
 void
 socksv5_pool_destroy(void);
 
+/** cantidad de conexiones SOCKS5 vivas (para el drenado del apagado) */
+unsigned
+socksv5_live_count(void);
+
 #endif

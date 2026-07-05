@@ -317,6 +317,13 @@ struct socks5 {
 
     /** siguiente en el pool de reuso */
     struct socks5                *next;
+
+    /**
+     * lista intrusiva de conexiones vivas (doblemente enlazada, separada de
+     * `next': una estructura está en una lista o en la otra, nunca en ambas).
+     * Permite saber cuántas conexiones siguen activas durante el drenado.
+     */
+    struct socks5                *live_next, *live_prev;
 };
 
 /** obtiene el struct (socks5 *) desde la llave de selección */
