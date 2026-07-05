@@ -72,7 +72,7 @@ summary="$(grep -c "ERROR SUMMARY:" "$LOG")"
 # resto es la salida normal del server (1 tras un SIGTERM). Los FILE
 # DESCRIPTORS del resumen son informativos, no parte del veredicto: siempre
 # figura el fd del --log-file de valgrind, y el teardown no cierra los fds de
-# las conexiones aun vivas al SIGTERM (pendiente de robustez, T92).
+# las conexiones aun vivas al SIGTERM (pendiente de robustez).
 if [ "$vg_status" -ne 99 ] && [ "$summary" -eq 1 ] && [ -z "$leaks" ] \
    && [ -z "$errors" ]; then
     echo "OK: sin fugas"

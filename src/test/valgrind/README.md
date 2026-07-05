@@ -18,8 +18,8 @@ Sale con código `0` si no hay fugas ni errores de memoria, `1` si valgrind
 reporta errores/fugas, `2` si falta valgrind, falla el build o el escenario no
 llega a establecerse. Los descriptores abiertos al exit se imprimen a título
 informativo (siempre figura el fd del `--log-file` de valgrind, y el teardown
-no cierra los fds de conexiones aún vivas al SIGTERM — pendiente de robustez,
-T92): no son parte del veredicto. Usa `driver_connecting.py` como generador de
+no cierra los fds de conexiones aún vivas al SIGTERM — pendiente de
+robustez): no son parte del veredicto. Usa `driver_connecting.py` como generador de
 carga (se le puede pasar puerto y cantidad de conexiones).
 
 ## `leak_copy_teardown.sh`
@@ -54,6 +54,30 @@ irresolubles para poblar `RESOLVING` y sus dos salidas.
 
 ```sh
 ./src/test/valgrind/leak_resolving_teardown.sh
+```
+
+Mismos códigos de salida que los anteriores.
+
+## `leak_multiip_teardown.sh`
+
+Audita los recursos del **connect robusto multi-IP**: el retry de
+candidatos multiplica fds (uno por dirección probada) y mantiene viva la lista
+de `addrinfo` entre intentos, así que es el candidato perfecto a fuga. El
+server corre con `multiip_shim.c` precargado (el de `src/test/integration/`):
+los nombres mágicos resuelven a varias direcciones de loopback donde solo
+`127.0.0.1` tiene un listener (el del propio driver). `driver_multiip.py`
+mezcla fallbacks que terminan conectando, agotamientos con REP `0x05` y
+clientes que cortan apenas mandado el REQUEST; después cae el `SIGTERM` con
+conexiones vivas.
+
+Valgrind valida que cada candidato fallido cerró su fd (`--track-fds`), que
+cada lista se libera exactamente una vez —también cuando el cliente corta
+antes del REPLY— y que el avance de candidatos no toca memoria inválida. Las
+listas las fabrica el shim con mallocs propios, así que una resolución sin
+liberar aparece como `definitely lost`.
+
+```sh
+./src/test/valgrind/leak_multiip_teardown.sh
 ```
 
 Mismos códigos de salida que los anteriores.

@@ -82,7 +82,7 @@ summary="$(grep -c "ERROR SUMMARY:" "$LOG")"
 # resto es la salida normal del server (1 tras un SIGTERM). Los FILE
 # DESCRIPTORS del resumen son informativos, no parte del veredicto: siempre
 # figura el fd del --log-file de valgrind, y el teardown no cierra los fds de
-# las conexiones aun vivas al SIGTERM (pendiente de robustez, T92).
+# las conexiones aun vivas al SIGTERM (pendiente de robustez).
 #
 # El tiempo SIGTERM->exit valida resolve_shutdown_wait de forma deterministica:
 # el SIGTERM cae con ~1s de resolucion pendiente, asi que un apagado correcto

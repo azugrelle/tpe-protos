@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Prueba end-to-end de integridad del relay (T41).
+# Prueba end-to-end de integridad del relay.
 #
 # Levanta el proxy y un http.server local, baja un archivo de varios MB a
 # traves del proxy y compara sha256 contra el original. El archivo es mucho
 # mas grande que los buffers de 2048 bytes, asi que valida I/O parcial y
 # backpressure con trafico real. Corre dos veces:
-#   1. con curl --socks5-hostname (el flujo del hito M3), y
+#   1. con curl --socks5-hostname (el camino tipico de un cliente real), y
 #   2. con half_close_client.py, que ademas hace un half-close REAL
 #      (shutdown SHUT_WR) que curl no ejercita.
 #

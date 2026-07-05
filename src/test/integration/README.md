@@ -6,12 +6,12 @@ requieren red externa: el "origen" es un `http.server` de Python local.
 
 ## `relay_integrity.sh`
 
-Valida el relay bidireccional de T41 con tráfico real: baja un archivo de 5MB
+Valida el relay bidireccional con tráfico real: baja un archivo de 5MB
 a través del proxy y compara `sha256sum` contra el original (el archivo es ≫
 que los buffers de 2048 bytes, así que ejercita I/O parcial y backpressure).
 Corre dos transferencias:
 
-1. con `curl --socks5-hostname` (el flujo del hito M3), y
+1. con `curl --socks5-hostname` (el camino típico de un cliente real), y
 2. con `half_close_client.py`, que además hace un **half-close real**.
 
 ```sh
@@ -27,7 +27,7 @@ falla el build.
 
 ## `multiip_fallback.sh`
 
-Valida el connect robusto multi-IP de T51: cuando un FQDN resuelve a varias
+Valida el connect robusto multi-IP: cuando un FQDN resuelve a varias
 direcciones, el proxy prueba cada una hasta que alguna funcione, y responde el
 REP correcto si todas fallan. El truco es `multiip_shim.c` (LD_PRELOAD sobre el
 proxy): resuelve nombres mágicos a listas controladas de loopbacks, y como el

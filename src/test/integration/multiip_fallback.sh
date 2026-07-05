@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Prueba end-to-end del connect robusto multi-IP (T51).
+# Prueba end-to-end del connect robusto multi-IP.
 #
 # Con multiip_shim.c (LD_PRELOAD) el proxy resuelve nombres magicos a listas
 # controladas de direcciones de loopback, y el http.server de origen escucha
