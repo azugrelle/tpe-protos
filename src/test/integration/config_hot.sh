@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Prueba end-to-end de la config dinamica en caliente (T72).
+# Prueba end-to-end de la config dinamica en caliente.
 #
 # Cubre los dos parametros contra el MISMO proceso, sin reiniciar en ningun
 # momento:
