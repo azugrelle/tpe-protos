@@ -221,6 +221,21 @@ metrics_add_user_site(const char *username, char *site, char *port, bool success
         return;
     }
     user_info *u = &all_time_users[at];
+
+    // Copiar los strings ANTES de tocar el ring: si un malloc falla acá no se
+    // modificó nada y la visita simplemente se descarta. Guardarlos NULL sería
+    // UB al formatear con %s, y fallar después de liberar la visita más vieja
+    // (rama de ring lleno) dejaría un slot con punteros colgando.
+    char *host = dup_str(site);
+    char *portstr = dup_str(port);
+    if (host == NULL || portstr == NULL) {
+        free(host);
+        free(portstr);
+        return;
+    }
+    sanitize_field(host);
+    sanitize_field(portstr);
+
     site_visit *v;
     if (u->site_count == MAX_SITES_PER_USER) {
         // ring lleno: se pisa la visita más vieja (site_start) y el inicio
@@ -238,6 +253,8 @@ metrics_add_user_site(const char *username, char *site, char *port, bool success
             }
             site_visit *grown = realloc(u->sites_visited, (size_t)new_cap * sizeof(site_visit));
             if (grown == NULL) {
+                free(host);
+                free(portstr);
                 return;
             }
             u->sites_visited = grown;
@@ -245,10 +262,8 @@ metrics_add_user_site(const char *username, char *site, char *port, bool success
         v = &u->sites_visited[u->site_count];
         u->site_count++;
     }
-    v->destination_host = dup_str(site);
-    v->destination_port = dup_str(port);
-    sanitize_field(v->destination_host);
-    sanitize_field(v->destination_port);
+    v->destination_host = host;
+    v->destination_port = portstr;
     v->timestamp = time(NULL);
     v->success = success;
     u->last_seen = time(NULL);
