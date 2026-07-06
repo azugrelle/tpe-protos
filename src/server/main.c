@@ -326,6 +326,7 @@ finally:
     socksv5_pool_destroy();
     mgmt_pool_destroy();
     metrics_free();
+    free_user_credentials();
 
     if(server >= 0) {
         close(server);

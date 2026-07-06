@@ -157,7 +157,7 @@ echo "timeout: subir el valor en caliente evita el cierre temprano, sin reinicia
 # ---- 2. buf_size: aplica solo a conexiones nuevas --------------------------
 
 curl -s --max-time "$XFER_TIMEOUT" --limit-rate "$RATE" \
-     --socks5-hostname "127.0.0.1:$PROXY_PORT" \
+     --socks5-hostname "$ADMIN_USER:$ADMIN_PASS@127.0.0.1:$PROXY_PORT" \
      "http://127.0.0.1:$HTTP_PORT/big.bin" -o "$TMP/got_live.bin" &
 CURL_PID=$!
 
@@ -183,7 +183,7 @@ echo "buf_size: la transferencia viva (buffers viejos) termino integra"
 
 # transferencia NUEVA, ya con el buf_size nuevo vigente
 curl -s --max-time "$XFER_TIMEOUT" \
-     --socks5-hostname "127.0.0.1:$PROXY_PORT" \
+     --socks5-hostname "$ADMIN_USER:$ADMIN_PASS@127.0.0.1:$PROXY_PORT" \
      "http://127.0.0.1:$HTTP_PORT/big.bin" -o "$TMP/got_new.bin"
 if [ $? -ne 0 ]; then
     echo "FALLO: la transferencia nueva (post buf_size) fallo" >&2
