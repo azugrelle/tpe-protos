@@ -63,8 +63,8 @@ usage(const char* progname)
             "                    el management queda inutilizable: los admins no\n"
             "                    pueden crearse en runtime.\n"
             "   -h               Imprime la ayuda y termina.\n"
-            "   -l <SOCKS addr>  Dirección donde servirá el proxy SOCKS.\n"
-            "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
+            "   -l <SOCKS addr>  Dirección (IPv4 o IPv6) donde servirá el proxy SOCKS.\n"
+            "   -L <conf  addr>  Dirección (IPv4 o IPv6) donde servirá el servicio de management.\n"
             "   -p <SOCKS port>  Puerto entrante conexiones SOCKS.\n"
             "   -P <conf port>   Puerto entrante conexiones configuracion\n"
             "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta 10.\n"
@@ -86,8 +86,6 @@ parse_args(const int argc, char** argv, struct socks5args* args)
     args->mng_addr = "127.0.0.1";
     args->mng_port = 8080;
 
-    args->disectors_enabled = true;
-
     int c;
     int nusers = 0;
 
@@ -98,7 +96,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "a:hl:L:Np:P:u:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "a:hl:L:p:P:u:v", long_options, &option_index);
         if (c == -1)
             break;
 
@@ -112,9 +110,6 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             break;
         case 'L':
             args->mng_addr = optarg;
-            break;
-        case 'N':
-            args->disectors_enabled = false;
             break;
         case 'p':
             args->socks_port = port(optarg);

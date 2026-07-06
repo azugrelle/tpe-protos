@@ -22,7 +22,7 @@
 #include <sys/socket.h>  // socket
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <arpa/inet.h>   // inet_pton
+#include <netdb.h>       // getaddrinfo
 
 // #include "include/socks5.h"
 #include "selector.h"
@@ -51,6 +51,36 @@ sigterm_handler(const int signal) {
     }
 }
 
+/**
+ * Resuelve `addr`:`port` (dirección numérica, sin DNS) a un sockaddr_storage
+ * apto para bind(2). El mismo código sirve para IPv4 e IPv6: la familia
+ * resuelta la decide `addr` (p.ej. "0.0.0.0" da AF_INET, "::1" da AF_INET6).
+ * Devuelve la familia resuelta o -1 si `addr` no es una dirección numérica
+ * válida en ninguna familia.
+ */
+static int
+resolve_passive(const char *addr, const unsigned short port,
+                struct sockaddr_storage *ss, socklen_t *ss_len) {
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%hu", port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;
+
+    struct addrinfo *res = NULL;
+    if(getaddrinfo(addr, port_str, &hints, &res) != 0 || res == NULL) {
+        return -1;
+    }
+    memcpy(ss, res->ai_addr, res->ai_addrlen);
+    *ss_len = (socklen_t) res->ai_addrlen;
+    const int family = res->ai_family;
+    freeaddrinfo(res);
+    return family;
+}
+
 int
 main(const int argc, char **argv) {
     struct socks5args args;
@@ -76,14 +106,17 @@ main(const int argc, char **argv) {
     // declarado (e inicializado) antes del primer goto finally, que lo cruza
     int mng_server            = -1;
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port        = htons(args.socks_port);
+    struct sockaddr_storage socks_ss;
+    socklen_t               socks_ss_len = 0;
+    const int socks_family = resolve_passive(args.socks_addr, args.socks_port,
+                                              &socks_ss, &socks_ss_len);
+    if(socks_family < 0) {
+        err_msg = "invalid SOCKS address (-l)";
+        goto finally;
+    }
 
     // no-const: el drenado lo cierra y lo blanquea a -1 antes del finally
-    int server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int server = socket(socks_family, SOCK_STREAM, IPPROTO_TCP);
     if(server < 0) {
         err_msg = "unable to create socket";
         goto finally;
@@ -93,8 +126,13 @@ main(const int argc, char **argv) {
 
     // man 7 ip. no importa reportar nada si falla.
     setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int));
+    if(socks_family == AF_INET6) {
+        // explícito: no queremos depender del default del sistema para
+        // aceptar clientes v4-mapped por un socket que -l pidió en v6.
+        setsockopt(server, IPPROTO_IPV6, IPV6_V6ONLY, &(int){ 1 }, sizeof(int));
+    }
 
-    if(bind(server, (struct sockaddr*) &addr, sizeof(addr)) < 0) {
+    if(bind(server, (struct sockaddr*) &socks_ss, socks_ss_len) < 0) {
         err_msg = "unable to bind socket";
         goto finally;
     }
@@ -177,16 +215,16 @@ main(const int argc, char **argv) {
 
     // socket pasivo del servicio de monitoreo (-L/-P): otro server en el
     // mismo selector, un solo select() atiende proxy + administración.
-    struct sockaddr_in mng_addr;
-    memset(&mng_addr, 0, sizeof(mng_addr));
-    mng_addr.sin_family = AF_INET;
-    mng_addr.sin_port   = htons(args.mng_port);
-    if(inet_pton(AF_INET, args.mng_addr, &mng_addr.sin_addr) != 1) {
+    struct sockaddr_storage mng_ss;
+    socklen_t               mng_ss_len = 0;
+    const int mng_family = resolve_passive(args.mng_addr, args.mng_port,
+                                            &mng_ss, &mng_ss_len);
+    if(mng_family < 0) {
         err_msg = "invalid management address (-L)";
         goto finally;
     }
 
-    mng_server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    mng_server = socket(mng_family, SOCK_STREAM, IPPROTO_TCP);
     if(mng_server < 0) {
         err_msg = "unable to create management socket";
         goto finally;
@@ -195,8 +233,11 @@ main(const int argc, char **argv) {
     fprintf(stdout, "Management listening on TCP port %d\n", args.mng_port);
 
     setsockopt(mng_server, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int));
+    if(mng_family == AF_INET6) {
+        setsockopt(mng_server, IPPROTO_IPV6, IPV6_V6ONLY, &(int){ 1 }, sizeof(int));
+    }
 
-    if(bind(mng_server, (struct sockaddr*) &mng_addr, sizeof(mng_addr)) < 0) {
+    if(bind(mng_server, (struct sockaddr*) &mng_ss, mng_ss_len) < 0) {
         err_msg = "unable to bind management socket";
         goto finally;
     }
