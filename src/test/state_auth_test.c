@@ -20,6 +20,8 @@ static int     g_credentials_calls   = 0;
 static uint8_t g_credentials_result  = 0x00;   // SOCKS_AUTH_STATUS_SUCCESS
 static char    g_seen_username[SOCKS_AUTH_MAX_LEN];
 static char    g_seen_password[SOCKS_AUTH_MAX_LEN];
+static int     g_add_user_calls      = 0;
+static char    g_added_username[SOCKS_AUTH_MAX_LEN];
 
 static void
 reset_injection(void) {
@@ -28,6 +30,8 @@ reset_injection(void) {
     g_credentials_result  = SOCKS_AUTH_STATUS_SUCCESS;
     g_seen_username[0]    = '\0';
     g_seen_password[0]    = '\0';
+    g_add_user_calls      = 0;
+    g_added_username[0]   = '\0';
 }
 
 unsigned
@@ -49,6 +53,12 @@ selector_status
 selector_set_interest_key(struct selector_key *key, fd_interest i) {
     (void)key; (void)i;
     return SELECTOR_SUCCESS;
+}
+
+void
+metrics_add_user(const char *username) {
+    g_add_user_calls++;
+    snprintf(g_added_username, sizeof(g_added_username), "%s", username);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -138,6 +148,9 @@ START_TEST (test_start_pipelined_auth_processed_inline) {
     ck_assert_str_eq("user", g_seen_username);
     ck_assert_str_eq("pass", g_seen_password);
     ck_assert_str_eq("user", t.s.username);
+    // credenciales válidas: el usuario queda registrado como activo
+    ck_assert_int_eq(1, g_add_user_calls);
+    ck_assert_str_eq("user", g_added_username);
     ck_assert(buffer_can_read(&t.s.write_buffer));   // respuesta serializada
 
     conn_close(&t);
@@ -204,6 +217,8 @@ START_TEST (test_start_pipelined_bad_credentials_still_replies) {
 
     ck_assert_uint_eq(AUTH_WRITE, st);
     ck_assert_uint_eq(SOCKS_AUTH_STATUS_FAILURE, t.s.client.auth.status);
+    // credenciales inválidas: nunca se registra como usuario activo
+    ck_assert_int_eq(0, g_add_user_calls);
 
     // al drenar la respuesta de falla se cierra sin iniciar el REQUEST
     st = auth_write(&key);

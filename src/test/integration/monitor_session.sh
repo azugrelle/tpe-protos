@@ -2,14 +2,18 @@
 #
 # Prueba end-to-end del cliente de monitoreo contra el server real.
 #
-# Cubre tres escenarios:
+# Cubre cuatro escenarios:
 #   1. sesion completa via one-shot: stats, users, connections, config (valido
 #      e invalido) y el contrato de exit codes (0 = +OK, 1 = -ERR o login
 #      fallido, 2 = uso invalido local, que ademas no toca la red).
 #   2. REPL scripteado por stdin: multi-comando, un comando desconocido no
 #      corta la sesion, el quit final devuelve 0, los prompts van a stderr
 #      (stdout queda solo con respuestas) y el password nunca se re-imprime.
-#   3. caida del server a mitad de sesion: coordinado con un FIFO para matar
+#   3. metricas con trafico real: un tunel SOCKS autenticado hacia un eco
+#      local debe reflejarse en STATS/USERS/CONNECTIONS mientras vive y
+#      desaparecer al cerrarse. Valida VALORES, no solo framing: los
+#      escenarios anteriores pasan igual con contadores siempre en cero.
+#   4. caida del server a mitad de sesion: coordinado con un FIFO para matar
 #      el server ENTRE dos comandos; el cliente debe reportar la desconexion
 #      con un mensaje claro y exit exactamente 1 (un crash saldria >= 128).
 #
@@ -23,6 +27,8 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 
 ADMIN_USER=admin
 ADMIN_PASS=secret
+SOCKS_USER=testuser
+SOCKS_PASS=testpass
 
 command -v python3 >/dev/null 2>&1 || { echo "falta python3" >&2; exit 2; }
 
@@ -32,9 +38,13 @@ make -C "$REPO" server client >/dev/null || { echo "fallo el build" >&2; exit 2;
 TMP="$(mktemp -d)"
 SERVER_PID=""
 CLIENT_PID=""
+ECHO_PID=""
+TUNNEL_PID=""
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
     [ -n "$CLIENT_PID" ] && kill "$CLIENT_PID" 2>/dev/null
+    [ -n "$ECHO_PID" ]   && kill "$ECHO_PID"   2>/dev/null
+    [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -48,7 +58,8 @@ PROXY_PORT="$(free_port)"
 MNG_PORT="$(free_port)"
 
 "$REPO/bin/server" -p "$PROXY_PORT" -L 127.0.0.1 -P "$MNG_PORT" \
-                   -a "$ADMIN_USER:$ADMIN_PASS" >/dev/null 2>&1 &
+                   -a "$ADMIN_USER:$ADMIN_PASS" \
+                   -u "$SOCKS_USER:$SOCKS_PASS" >/dev/null 2>&1 &
 SERVER_PID=$!
 
 # esperar a que el server escuche de verdad (y detectar si murio al nacer)
@@ -164,7 +175,122 @@ fi
 
 echo "REPL: sesion multi-comando, errores locales sin cortar, password nunca impreso"
 
-# ---- 4. caida del server entre dos comandos ----------------------------------
+# ---- 4. metricas con trafico SOCKS real ---------------------------------------
+
+# hasta aca solo hubo sesiones de monitoreo, que no cuentan como conexiones
+# del proxy: stats/users/connections respondieron bien formados pero con todo
+# en cero. Un tunel SOCKS autenticado contra un eco local permite asertar los
+# valores: alta mientras el tunel vive, baja al cerrarse.
+
+ECHO_PORT="$(free_port)"
+python3 -c '
+import socket, sys
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(4)
+while True:
+    c, _ = srv.accept()
+    while True:
+        d = c.recv(4096)
+        if not d:
+            break
+        c.sendall(d)
+    c.close()
+' "$ECHO_PORT" >/dev/null 2>&1 &
+ECHO_PID=$!
+wait_listen "$ECHO_PID" "$ECHO_PORT" "eco" || exit 2
+
+# el FIFO sostiene el tunel abierto mientras se consultan las metricas y
+# permite soltarlo en el momento exacto (mismo patron que el escenario 5)
+mkfifo "$TMP/tunnel_fifo"
+exec 4<>"$TMP/tunnel_fifo"
+python3 "$HERE/authed_tunnel_client.py" "$PROXY_PORT" \
+    "$SOCKS_USER" "$SOCKS_PASS" 127.0.0.1 "$ECHO_PORT" <"$TMP/tunnel_fifo" \
+    >"$TMP/tunnel_out.txt" 2>"$TMP/tunnel_err.txt" &
+TUNNEL_PID=$!
+
+# TUNNEL_UP aparece recien despues del eco: ya hay bytes relayados que asertar
+ok=0
+for _ in $(seq 1 50); do
+    if grep -q "TUNNEL_UP" "$TMP/tunnel_out.txt" 2>/dev/null; then
+        ok=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$ok" -ne 1 ]; then
+    echo "FALLO: el tunel SOCKS autenticado no se establecio" >&2
+    cat "$TMP/tunnel_err.txt" >&2
+    exit 1
+fi
+
+# el cliente alinea las columnas: entre el campo y el valor hay 1+ espacios
+oneshot -a "$ADMIN_USER:$ADMIN_PASS" stats
+if [ "$RC" -ne 0 ] \
+   || ! grep -Eq "historical_connections: +[1-9]" <<<"$OUT" \
+   || ! grep -Eq "concurrent_connections: +[1-9]" <<<"$OUT" \
+   || ! grep -Eq "active_users: +[1-9]" <<<"$OUT" \
+   || ! grep -Eq "bytes_transferred: +[1-9]" <<<"$OUT"; then
+    echo "FALLO: stats no refleja el tunel abierto: $OUT" >&2
+    exit 1
+fi
+
+oneshot -a "$ADMIN_USER:$ADMIN_PASS" users
+if [ "$RC" -ne 0 ] || ! grep -q "$SOCKS_USER" <<<"$OUT"; then
+    echo "FALLO: users no lista a $SOCKS_USER con su tunel abierto: $OUT" >&2
+    exit 1
+fi
+
+oneshot -a "$ADMIN_USER:$ADMIN_PASS" connections
+if [ "$RC" -ne 0 ] || ! grep -Eq "current_connections: +[1-9]" <<<"$OUT"; then
+    echo "FALLO: connections no refleja el tunel abierto: $OUT" >&2
+    exit 1
+fi
+
+# soltar el tunel y verificar la baja (el teardown es asincronico: se sondea)
+printf '\n' >&4
+exec 4>&-
+for _ in $(seq 1 50); do
+    kill -0 "$TUNNEL_PID" 2>/dev/null || break
+    sleep 0.1
+done
+if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    echo "FALLO: el cliente del tunel no salio tras soltar su stdin" >&2
+    exit 1
+fi
+wait "$TUNNEL_PID"
+rc=$?
+TUNNEL_PID=""
+if [ "$rc" -ne 0 ]; then
+    echo "FALLO: el tunel SOCKS fallo (exit $rc)" >&2
+    cat "$TMP/tunnel_err.txt" >&2
+    exit 1
+fi
+
+ok=0
+for _ in $(seq 1 50); do
+    oneshot -a "$ADMIN_USER:$ADMIN_PASS" users
+    if [ "$RC" -eq 0 ] && ! grep -q "$SOCKS_USER" <<<"$OUT"; then
+        oneshot -a "$ADMIN_USER:$ADMIN_PASS" connections
+        if [ "$RC" -eq 0 ] && grep -Eq "current_connections: +0$" <<<"$OUT"; then
+            ok=1
+            break
+        fi
+    fi
+    sleep 0.1
+done
+if [ "$ok" -ne 1 ]; then
+    echo "FALLO: la baja del tunel no se reflejo en users/connections" >&2
+    exit 1
+fi
+
+kill "$ECHO_PID" 2>/dev/null
+ECHO_PID=""
+
+echo "metricas: stats/users/connections reflejan el tunel real, alta y baja"
+
+# ---- 5. caida del server entre dos comandos ----------------------------------
 
 # el FIFO permite matar el server ENTRE dos comandos: un heredoc entregaria
 # todo el input de una y no habria forma de coordinar el momento del kill. La
@@ -227,5 +353,5 @@ fi
 
 echo "caida del server: mensaje claro y exit 1, sin crash"
 
-echo "OK: cliente de monitoreo integro en los cuatro escenarios"
+echo "OK: cliente de monitoreo y metricas integros en todos los escenarios"
 exit 0

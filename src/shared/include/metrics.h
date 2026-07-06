@@ -72,10 +72,12 @@ void metrics_connection_end(void);
 /** Suma bytes copiados por el relay (ambos sentidos). Ignora valores <= 0. */
 void metrics_bytes_transferred(ssize_t bytes);
 
-/** Marca a un usuario como activo (conectado ahora). */
+/** Registra UNA conexión del usuario. Varias conexiones del mismo usuario
+ *  comparten un único entry de activo (se cuentan, no se duplican). */
 void metrics_add_user(const char *username);
 
-/** Marca a un usuario como desconectado (lo saca de la lista de activos). */
+/** Da de baja UNA conexión del usuario; sale de la lista de activos recién
+ *  al morir su última conexión. */
 void metrics_remove_user(const char *username);
 
 /** Registra un sitio visitado por un usuario (queda en el histórico). */

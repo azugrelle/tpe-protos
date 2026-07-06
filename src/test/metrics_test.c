@@ -127,6 +127,112 @@ START_TEST (test_access_log_sanitizes_framing_bytes) {
 }
 END_TEST
 
+START_TEST (test_no_active_users_initially) {
+    metrics_init();
+
+    ck_assert_int_eq(0, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_add_user_becomes_active) {
+    metrics_init();
+
+    metrics_add_user("alice");
+
+    ck_assert_int_eq(1, metrics_get_user_count());
+    user_info u;
+    metrics_get_users(&u, 1);
+    ck_assert_str_eq("alice", u.username);
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_remove_user_leaves_actives) {
+    metrics_init();
+
+    metrics_add_user("alice");
+    metrics_remove_user("alice");
+
+    ck_assert_int_eq(0, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_remove_unknown_user_is_noop) {
+    metrics_init();
+
+    metrics_add_user("alice");
+    metrics_remove_user("nobody");
+
+    ck_assert_int_eq(1, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_same_user_twice_single_entry) {
+    metrics_init();
+
+    metrics_add_user("alice");
+    metrics_add_user("alice");
+
+    ck_assert_int_eq(1, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_user_active_until_last_connection_dies) {
+    metrics_init();
+
+    // dos conexiones del mismo usuario: la primera desconexión no debe
+    // sacarlo de los activos, la segunda sí
+    metrics_add_user("alice");
+    metrics_add_user("alice");
+
+    metrics_remove_user("alice");
+    ck_assert_int_eq(1, metrics_get_user_count());
+    user_info u;
+    metrics_get_users(&u, 1);
+    ck_assert_str_eq("alice", u.username);
+
+    metrics_remove_user("alice");
+    ck_assert_int_eq(0, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
+START_TEST (test_remove_compacts_without_mixing_counts) {
+    metrics_init();
+
+    // bob (2 conexiones) queda último en el arreglo; al morir alice, bob se
+    // mueve a su hueco y tiene que conservar SU contador: una desconexión de
+    // bob no debe eliminarlo todavía
+    metrics_add_user("alice");
+    metrics_add_user("bob");
+    metrics_add_user("bob");
+
+    metrics_remove_user("alice");
+    ck_assert_int_eq(1, metrics_get_user_count());
+
+    metrics_remove_user("bob");
+    ck_assert_int_eq(1, metrics_get_user_count());
+    user_info u;
+    metrics_get_users(&u, 1);
+    ck_assert_str_eq("bob", u.username);
+
+    metrics_remove_user("bob");
+    ck_assert_int_eq(0, metrics_get_user_count());
+
+    metrics_free();
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("metrics");
@@ -140,6 +246,16 @@ suite(void) {
     tcase_add_test(tc, test_access_log_respects_max);
     tcase_add_test(tc, test_access_log_sanitizes_framing_bytes);
     suite_add_tcase(s, tc);
+
+    TCase *tc_active = tcase_create("active_users");
+    tcase_add_test(tc_active, test_no_active_users_initially);
+    tcase_add_test(tc_active, test_add_user_becomes_active);
+    tcase_add_test(tc_active, test_remove_user_leaves_actives);
+    tcase_add_test(tc_active, test_remove_unknown_user_is_noop);
+    tcase_add_test(tc_active, test_same_user_twice_single_entry);
+    tcase_add_test(tc_active, test_user_active_until_last_connection_dies);
+    tcase_add_test(tc_active, test_remove_compacts_without_mixing_counts);
+    suite_add_tcase(s, tc_active);
 
     return s;
 }

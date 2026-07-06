@@ -19,11 +19,13 @@ static time_t   server_start_time = 0;
  *  - all_time_users: fuente de verdad. Un entry por usuario distinto visto desde
  *    el arranque. Es DUEÑO de sites_visited (alimenta ACCESS_LOG).
  *  - active_users: subconjunto conectado ahora. Copia superficial de
- *    username/last_seen; NO es dueño de sites (evita doble free). Se maneja como
- *    conjunto de usernames únicos: varias conexiones del mismo usuario no
- *    duplican el entry (simplificación acorde al alcance del TP).
+ *    username/last_seen; NO es dueño de sites (evita doble free). Un entry por
+ *    usuario distinto: N conexiones del mismo usuario comparten el entry, y
+ *    active_conns (paralelo por índice) cuenta cuántas siguen vivas — el entry
+ *    se da de baja recién cuando muere la última, no en la primera desconexión.
  */
 static user_info active_users[MAX_CONNECTIONS];
+static int active_conns[MAX_CONNECTIONS];
 static int active_count = 0;
 
 static user_info *all_time_users = NULL;
@@ -165,9 +167,10 @@ metrics_add_user(const char *username) {
     if (at >= 0) {
         all_time_users[at].last_seen = time(NULL);
     }
-    // Alta en activos (como conjunto: no duplica si ya está).
+    // Alta en activos: si ya estaba, es una conexión más del mismo usuario.
     int idx = find_active(username);
     if (idx >= 0) {
+        active_conns[idx]++;
         active_users[idx].last_seen = time(NULL);
         return;
     }
@@ -181,6 +184,7 @@ metrics_add_user(const char *username) {
     active_users[idx].last_seen = time(NULL);
     active_users[idx].sites_visited = NULL;  // los sitios viven en all_time
     active_users[idx].site_count = 0;
+    active_conns[idx] = 1;
 }
 
 void
@@ -192,9 +196,14 @@ metrics_remove_user(const char *username) {
     if (idx < 0) {
         return;
     }
-    // Compacta el arreglo moviendo el último al hueco.
-    active_users[idx] = active_users[active_count - 1];
-    active_count--;
+    // Baja de UNA conexión: el usuario sigue activo mientras le quede otra.
+    active_conns[idx]--;
+    if (active_conns[idx] <= 0) {
+        // Compacta el arreglo moviendo el último al hueco.
+        active_users[idx] = active_users[active_count - 1];
+        active_conns[idx] = active_conns[active_count - 1];
+        active_count--;
+    }
 
     int at = find_all_time(username);
     if (at >= 0) {
