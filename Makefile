@@ -47,6 +47,7 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/request_parser_test \
       $(TEST_FOLDER)/state_connect_test \
       $(TEST_FOLDER)/state_copy_test \
+      $(TEST_FOLDER)/state_auth_test \
       $(TEST_FOLDER)/state_request_test \
       $(TEST_FOLDER)/metrics_test \
       $(TEST_FOLDER)/hashmap_user_auth_test
@@ -102,6 +103,13 @@ $(TEST_FOLDER)/state_connect_test: src/test/state_connect_test.c src/server/stat
 $(TEST_FOLDER)/state_copy_test: src/test/state_copy_test.c src/server/states/state_copy.c src/shared/buffer.c src/shared/metrics.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) -Wl,--wrap=recv,--wrap=send,--wrap=shutdown src/test/state_copy_test.c src/shared/buffer.c src/shared/metrics.c $(CHECK_FLAGS) -o $@
+
+# state_auth_test incluye state_auth.c inline (stubs de request_start /
+# check_if_valid_credentials / selector); auth_parser.c y buffer.c se linkean
+# reales. Cubre el subnegotiation, incluidos bytes pipelineados con el hello.
+$(TEST_FOLDER)/state_auth_test: src/test/state_auth_test.c src/server/states/state_auth.c src/server/parsers/auth_parser.c src/shared/buffer.c
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILER_FLAGS) src/test/state_auth_test.c src/server/parsers/auth_parser.c src/shared/buffer.c $(CHECK_FLAGS) -o $@
 
 # state_request_test incluye state_request.c inline (stubs de connect_start /
 # copy_start / selector); send() se intercepta con --wrap para forzar envíos

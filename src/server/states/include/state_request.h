@@ -8,8 +8,13 @@
 #include "include/socks5_state.h"
 #include "selector.h"
 
-/** inicializa el estado REQUEST_READ (on_arrival) */
-void request_read_init(const unsigned state, struct selector_key *key);
+/**
+ * inicia la lectura del REQUEST (iniciación llamada desde hello_write /
+ * auth_write, no un on_arrival): prepara REQUEST_READ y procesa inline los
+ * bytes que hayan llegado pipelineados con el mensaje anterior. Devuelve el
+ * próximo estado (puede saltear REQUEST_READ).
+ */
+unsigned request_start(struct selector_key *key);
 
 /**
  * serializa el reply del REQUEST (RFC 1928 §6) en `s->write_buffer'. Único punto

@@ -304,8 +304,11 @@ static const struct state_definition client_statbl[] = {
         .on_write_ready   = hello_write,
     },
     {
+        // sin on_arrival: la iniciación es auth_start (llamada desde
+        // hello_write), que procesa inline bytes pipelineados y por eso
+        // puede transicionar (on_arrival no puede) — puede incluso saltear
+        // este estado si el mensaje ya llegó completo.
         .state            = AUTH_READ,
-        .on_arrival       = auth_read_init,
         .on_departure     = auth_read_close,
         .on_read_ready    = auth_read,
     },
@@ -314,8 +317,9 @@ static const struct state_definition client_statbl[] = {
         .on_write_ready   = auth_write,
     },
     {
+        // sin on_arrival: la iniciación es request_start (llamada desde
+        // hello_write / auth_write), por el mismo motivo que AUTH_READ.
         .state            = REQUEST_READ,
-        .on_arrival       = request_read_init,
         .on_departure     = request_read_close,
         .on_read_ready    = request_read,
     },

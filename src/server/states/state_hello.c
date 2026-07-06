@@ -5,8 +5,8 @@
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_hello.h"
-#include "include/state_auth.h"      // AUTH_READ es el próximo estado si se autentica
-#include "include/state_request.h"   // REQUEST_READ es el próximo estado si no
+#include "include/state_auth.h"      // auth_start es el próximo paso si se autentica
+#include "include/state_request.h"   // request_start es el próximo paso si no
 #include "utils/include/user_auth_utils.h" 
 
 /** callback del parser utilizado en `hello_read' */
@@ -105,18 +105,18 @@ hello_write(struct selector_key *key) {
     } else {
         buffer_read_adv(d->wb, n);
         if(!buffer_can_read(d->wb)) {
-            // terminamos de escribir la respuesta del hello.
+            // terminamos de escribir la respuesta del hello. La iniciación
+            // del paso siguiente procesa inline lo que el cliente haya
+            // mandado pipelineado junto al hello (por esos bytes no va a
+            // haber otro evento de lectura).
             if(SOCKS_HELLO_NO_ACCEPTABLE_METHODS == d->method) {
                 // ya enviamos 0xFF: cerramos la conexión (RFC 1928 §3).
                 ret = DONE;
             } else if(SOCKS_HELLO_USERNAME_PASSWORD == d->method) {
                 // el cliente eligió autenticarse: sigue el subnegotiation.
-                ret = (SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ))
-                          ? AUTH_READ : ERROR;
-            } else if(SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ)) {
-                ret = REQUEST_READ;
+                ret = auth_start(key);
             } else {
-                ret = ERROR;
+                ret = request_start(key);
             }
         }
     }

@@ -25,17 +25,6 @@ request_reply(struct socks5 *s, uint8_t rep, uint8_t bnd_atyp,
     return request_marshall(&s->write_buffer, rep, bnd_atyp, bnd_addr, bnd_port);
 }
 
-/** inicializa el estado REQUEST_READ */
-void
-request_read_init(const unsigned state, struct selector_key *key) {
-    struct request_st *d = &ATTACHMENT(key)->client.request;
-
-    d->rb          = &ATTACHMENT(key)->read_buffer;
-    d->wb          = &ATTACHMENT(key)->write_buffer;
-    d->parser.data = NULL;
-    request_parser_init(&d->parser);
-}
-
 /** traduce el estado final del parser al código REP de la respuesta */
 static uint8_t
 request_rep(struct socks5 *s) {
@@ -84,6 +73,50 @@ request_process(struct selector_key *key) {
     return REQUEST_WRITE;
 }
 
+/**
+ * consume lo que haya en el read_buffer y decide la transición: REQUEST_READ
+ * si el pedido sigue incompleto, o lo que dicte request_process al completarse.
+ * Separada del recv para que request_start pueda procesar bytes que llegaron
+ * pipelineados con el hello/auth, por los que no habrá evento de lectura.
+ */
+static unsigned
+request_consume_buffer(struct selector_key *key) {
+    struct request_st *d = &ATTACHMENT(key)->client.request;
+
+    const enum request_state st = request_consume(d->rb, &d->parser, 0);
+    if(!request_is_done(st, 0)) {
+        return REQUEST_READ;   // el mensaje todavía no está completo
+    }
+    return request_process(key);
+}
+
+/**
+ * inicia la lectura del REQUEST. Es una función de iniciación llamada desde
+ * hello_write / auth_write, no un on_arrival (que no puede transicionar): si
+ * el cliente mandó el REQUEST pegado al mensaje anterior, esos bytes ya están
+ * en el read_buffer y el kernel no va a reportar otro evento de lectura por
+ * ellos, así que se procesan acá mismo (puede saltear REQUEST_READ).
+ */
+unsigned
+request_start(struct selector_key *key) {
+    struct socks5     *s = ATTACHMENT(key);
+    struct request_st *d = &s->client.request;
+
+    d->rb          = &s->read_buffer;
+    d->wb          = &s->write_buffer;
+    d->parser.data = NULL;
+    request_parser_init(&d->parser);
+
+    if(buffer_can_read(d->rb)) {
+        const unsigned ret = request_consume_buffer(key);
+        if(REQUEST_READ != ret) {
+            return ret;
+        }
+    }
+    return (SELECTOR_SUCCESS == selector_set_interest_key(key, OP_READ))
+               ? REQUEST_READ : ERROR;
+}
+
 /** lee y parsea el pedido `request' del cliente */
 unsigned
 request_read(struct selector_key *key) {
@@ -99,12 +132,7 @@ request_read(struct selector_key *key) {
         return ERROR;
     }
     buffer_write_adv(d->rb, n);
-
-    const enum request_state st = request_consume(d->rb, &d->parser, 0);
-    if(!request_is_done(st, 0)) {
-        return REQUEST_READ;   // el mensaje todavía no está completo
-    }
-    return request_process(key);
+    return request_consume_buffer(key);
 }
 
 /** envía el reply del `request' al cliente */

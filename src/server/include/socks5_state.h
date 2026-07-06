@@ -55,8 +55,14 @@ enum socks_v5state {
      *
      * Transiciones:
      *   - HELLO_WRITE  mientras queden bytes por enviar
-     *   - REQUEST_READ cuando se enviaron todos los bytes
-     *   - ERROR        ante cualquier error (IO/parseo)
+     *   - AUTH_READ    enviado todo, con método usuario/contraseña
+     *   - REQUEST_READ enviado todo, con método no-auth
+     *   - DONE         enviado el 0xFF de "ningún método aceptable"
+     *   - ERROR        ante cualquier error (IO)
+     *
+     * Si el cliente pipelineó el próximo mensaje junto al hello, la
+     * iniciación del paso siguiente lo procesa inline y puede saltear el
+     * estado *_READ (p.ej. directo a AUTH_WRITE o a RESOLVING).
      */
     HELLO_WRITE,
 
@@ -82,7 +88,10 @@ enum socks_v5state {
      *
      * Transiciones:
      *   - AUTH_WRITE   mientras queden bytes por enviar
-     *   - REQUEST_READ cuando el STATUS fue éxito (0x00)
+     *   - REQUEST_READ cuando el STATUS fue éxito (0x00); si el REQUEST
+     *                  vino pipelineado se procesa inline y puede saltear
+     *                  ese estado (directo a REQUEST_WRITE / RESOLVING /
+     *                  CONNECTING)
      *   - DONE         cuando el STATUS fue falla (RFC 1929 exige cerrar
      *                  la conexión ante autenticación fallida)
      *   - ERROR        ante cualquier error (IO)

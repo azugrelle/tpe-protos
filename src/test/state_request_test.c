@@ -103,6 +103,22 @@ reply_ready(struct test_conn *t, uint8_t rep) {
     ck_assert_uint_eq(rep, t->s.reply_rep);
 }
 
+/* deposita bytes en un buffer como si un recv previo los hubiera dejado */
+static void
+buf_fill(buffer *b, const uint8_t *data, size_t len) {
+    size_t   space;
+    uint8_t *ptr = buffer_write_ptr(b, &space);
+
+    ck_assert_uint_ge(space, len);
+    memcpy(ptr, data, len);
+    buffer_write_adv(b, len);
+}
+
+/* CONNECT a 1.2.3.4:80, ATYP IPv4 (10 bytes) */
+static const uint8_t connect_ipv4[] = {
+    0x05, 0x01, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50,
+};
+
 //////////////////////////////////////////////////////////////////////
 
 START_TEST (test_success_reply_starts_copy) {
@@ -193,6 +209,88 @@ START_TEST (test_partial_send_stays_in_request_write) {
 }
 END_TEST
 
+START_TEST (test_start_without_pipelined_bytes_waits) {
+    // read_buffer vacío: request_start solo deja el estado listo y espera
+    // el evento de lectura.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    unsigned st = request_start(&key);
+
+    ck_assert_uint_eq(REQUEST_READ, st);
+    ck_assert_int_eq(0, g_connect_start_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_start_pipelined_request_processed_inline) {
+    // el REQUEST completo ya estaba en el read_buffer (llegó pipelineado con
+    // el hello/auth): por esos bytes no habrá evento de lectura, así que
+    // request_start debe procesarlos inline y disparar la conexión al origen.
+    struct test_conn t;
+    conn_init(&t);
+    buf_fill(&t.s.read_buffer, connect_ipv4, sizeof(connect_ipv4));
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    unsigned st = request_start(&key);
+
+    ck_assert_uint_eq(CONNECTING, st);
+    ck_assert_int_eq(1, g_connect_start_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_start_pipelined_partial_request_then_read_completes) {
+    // solo un prefijo del REQUEST vino pipelineado: request_start lo consume
+    // y queda en REQUEST_READ; el resto llega por el socket y request_read lo
+    // completa sin perder lo ya parseado.
+    struct test_conn t;
+    conn_init(&t);
+    buf_fill(&t.s.read_buffer, connect_ipv4, 4);   // hasta el ATYP inclusive
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    unsigned st = request_start(&key);
+    ck_assert_uint_eq(REQUEST_READ, st);
+    ck_assert_int_eq(0, g_connect_start_calls);
+
+    const size_t rest = sizeof(connect_ipv4) - 4;
+    ck_assert_int_eq((ssize_t)rest,
+                     send(t.client_peer, connect_ipv4 + 4, rest, 0));
+    st = request_read(&key);
+    ck_assert_uint_eq(CONNECTING, st);
+    ck_assert_int_eq(1, g_connect_start_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_start_pipelined_invalid_request_replies_error) {
+    // el REQUEST pipelineado trae un CMD no soportado (BIND): el reply de
+    // error queda serializado y se pasa a REQUEST_WRITE sin conectar.
+    struct test_conn t;
+    conn_init(&t);
+    const uint8_t bind_req[] = {0x05, 0x02, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50};
+    buf_fill(&t.s.read_buffer, bind_req, sizeof(bind_req));
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    unsigned st = request_start(&key);
+
+    ck_assert_uint_eq(REQUEST_WRITE, st);
+    ck_assert_int_eq(0, g_connect_start_calls);
+    ck_assert_uint_eq(SOCKS5_REP_CMD_NOT_SUPPORTED, t.s.reply_rep);
+    ck_assert(buffer_can_read(&t.s.write_buffer));   // reply listo para enviar
+
+    conn_close(&t);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_request");
@@ -203,6 +301,13 @@ suite(void) {
     tcase_add_test(tc, test_error_reply_closes);
     tcase_add_test(tc, test_partial_send_stays_in_request_write);
     suite_add_tcase(s, tc);
+
+    TCase *tc_start = tcase_create("request_start");
+    tcase_add_test(tc_start, test_start_without_pipelined_bytes_waits);
+    tcase_add_test(tc_start, test_start_pipelined_request_processed_inline);
+    tcase_add_test(tc_start, test_start_pipelined_partial_request_then_read_completes);
+    tcase_add_test(tc_start, test_start_pipelined_invalid_request_replies_error);
+    suite_add_tcase(s, tc_start);
 
     return s;
 }

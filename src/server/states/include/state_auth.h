@@ -12,8 +12,13 @@
 #include "include/socks5_state.h"
 #include "selector.h"
 
-/** inicializa las variables del estado al entrar a AUTH_READ */
-void auth_read_init(const unsigned state, struct selector_key *key);
+/**
+ * inicia el subnegotiation usuario/contraseña (iniciación llamada desde
+ * hello_write, no un on_arrival): prepara AUTH_READ y procesa inline los
+ * bytes que hayan llegado pipelineados con el hello. Devuelve el próximo
+ * estado (puede saltear AUTH_READ).
+ */
+unsigned auth_start(struct selector_key *key);
 
 /** lee los bytes del subnegotiation y, cuando está completo, responde */
 unsigned auth_read(struct selector_key *key);
