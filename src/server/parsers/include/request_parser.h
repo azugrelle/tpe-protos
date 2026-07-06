@@ -20,6 +20,8 @@
  * DST.ADDR es de largo variable según ATYP:
  *   - IPv4  (0x01): 4 octetos.
  *   - DOMAIN(0x03): 1 octeto de longitud N, seguido de N octetos (sin NUL).
+ *     Solo se aceptan letras, dígitos, '-' y '.' (charset de hostname);
+ *     cualquier otro byte invalida el pedido.
  *   - IPv6  (0x04): 16 octetos.
  * DST.PORT son 2 octetos en network byte order (big-endian).
  *
@@ -87,7 +89,8 @@ enum request_state {
     request_error_unsupported_version,
     request_error_unsupported_cmd,
     request_error_unsupported_atyp,
-    /** pedido malformado (p.ej. FQDN de longitud 0); reply REP general failure */
+    /** pedido malformado (FQDN vacío o con bytes fuera del charset de
+     *  hostname); reply REP general failure */
     request_error_invalid,
 };
 

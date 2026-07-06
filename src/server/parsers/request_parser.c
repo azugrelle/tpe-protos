@@ -21,6 +21,20 @@ request_parser_init(struct request_parser *p) {
     p->dst_port      = 0;
 }
 
+/*
+ * charset aceptado en un FQDN: letras, dígitos, '-' y '.' (hostname clásico).
+ * Rechazar el resto no es solo lo correcto a nivel protocolo: impide que
+ * espacios, saltos de línea o caracteres de control lleguen como "destino"
+ * al historial de accesos y al protocolo de monitoreo (orientado a líneas,
+ * con campos separados por espacio), donde permitirían forjar o cortar
+ * registros del ACCESS_LOG.
+ */
+static bool
+is_valid_fqdn_byte(const uint8_t b) {
+    return ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') ||
+           ('0' <= b && b <= '9') || '-' == b || '.' == b;
+}
+
 enum request_state
 request_parser_feed(struct request_parser *p, const uint8_t b) {
     switch(p->state) {
@@ -80,6 +94,10 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
 
         case request_dstaddr:
             // se acumulan los octetos de DST.ADDR hasta completar el largo.
+            if(SOCKS5_ATYP_DOMAIN == p->atyp && !is_valid_fqdn_byte(b)) {
+                p->state = request_error_invalid;
+                break;
+            }
             p->dst_addr[p->dst_addr_read++] = b;
             if(--p->remaining == 0) {
                 p->dst_addr_len = p->dst_addr_read;

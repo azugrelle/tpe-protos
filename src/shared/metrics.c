@@ -46,6 +46,28 @@ dup_str(const char *s) {
     return copy;
 }
 
+/*
+ * Reemplaza por '?' todo byte fuera del ASCII imprimible sin espacio. Las
+ * respuestas del monitoreo separan campos con espacio y registros con líneas
+ * (y un "." solo en su línea termina las listas), así que un valor con
+ * espacios o caracteres de control rompería el framing o permitiría forjar
+ * registros del ACCESS_LOG. Es defensa en profundidad: los valores que llegan
+ * acá ya vienen validados (el parser del REQUEST restringe el charset del
+ * FQDN y las IPs salen de inet_ntop).
+ */
+static void
+sanitize_field(char *s) {
+    if (s == NULL) {
+        return;
+    }
+    for (; *s != '\0'; s++) {
+        const unsigned char c = (unsigned char)*s;
+        if (c <= ' ' || c > '~') {
+            *s = '?';
+        }
+    }
+}
+
 static int
 find_active(const char *username) {
     for (int i = 0; i < active_count; i++) {
@@ -202,6 +224,8 @@ metrics_add_user_site(const char *username, char *site, char *port, bool success
     site_visit *v = &u->sites_visited[u->site_count];
     v->destination_host = dup_str(site);
     v->destination_port = dup_str(port);
+    sanitize_field(v->destination_host);
+    sanitize_field(v->destination_port);
     v->timestamp = time(NULL);
     v->success = success;
     u->site_count++;

@@ -135,6 +135,55 @@ START_TEST (test_request_empty_fqdn) {
 }
 END_TEST
 
+START_TEST (test_request_fqdn_rejects_newline) {
+    // un '\n' dentro del FQDN permitiría inyectar líneas (y por lo tanto
+    // registros forjados) en el ACCESS_LOG del monitoreo: pedido inválido.
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *host = "a\n.example";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(host)};
+    memcpy(msg + 5, host, strlen(host));
+    enum request_state st = feed_all(&p, msg, 5 + strlen(host), &err);
+
+    ck_assert_int_eq(true, err);
+    ck_assert_int_eq(request_error_invalid, st);
+}
+END_TEST
+
+START_TEST (test_request_fqdn_rejects_space) {
+    // el espacio separa campos en las líneas del ACCESS_LOG: pedido inválido.
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *host = "a b.example";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(host)};
+    memcpy(msg + 5, host, strlen(host));
+    enum request_state st = feed_all(&p, msg, 5 + strlen(host), &err);
+
+    ck_assert_int_eq(true, err);
+    ck_assert_int_eq(request_error_invalid, st);
+}
+END_TEST
+
+START_TEST (test_request_fqdn_hostname_charset) {
+    // mayúsculas, dígitos, '-' y '.' son válidos y no deben rechazarse.
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    const char *host = "sub-1.Example2.COM";
+    uint8_t msg[64] = {0x05,0x01,0x00,0x03,(uint8_t)strlen(host)};
+    memcpy(msg + 5, host, strlen(host));
+    size_t off = 5 + strlen(host);
+    msg[off] = 0x00; msg[off+1] = 0x50;  // puerto 80
+    enum request_state st = feed_all(&p, msg, off + 2, &err);
+
+    ck_assert_int_eq(false, err);
+    ck_assert_int_eq(request_done, st);
+    ck_assert_int_eq(0, memcmp(p.dst_addr, host, strlen(host)));
+}
+END_TEST
+
 START_TEST (test_request_ipv4_full) {
     struct request_parser p;
     request_parser_init(&p);
@@ -321,6 +370,9 @@ suite(void) {
     tcase_add_test(tc, test_request_unsupported_atyp);
     tcase_add_test(tc, test_request_fragmented);
     tcase_add_test(tc, test_request_empty_fqdn);
+    tcase_add_test(tc, test_request_fqdn_rejects_newline);
+    tcase_add_test(tc, test_request_fqdn_rejects_space);
+    tcase_add_test(tc, test_request_fqdn_hostname_charset);
     tcase_add_test(tc, test_request_ipv4_full);
     tcase_add_test(tc, test_request_fqdn_full);
     tcase_add_test(tc, test_request_port_fragmented);

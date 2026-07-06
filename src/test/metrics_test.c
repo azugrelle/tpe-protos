@@ -108,6 +108,25 @@ START_TEST (test_access_log_respects_max) {
 }
 END_TEST
 
+START_TEST (test_access_log_sanitizes_framing_bytes) {
+    metrics_init();
+
+    // defensa en profundidad: aunque el parser del REQUEST ya rechaza estos
+    // bytes, un destino con '\n' o espacios no debe poder cortar líneas ni
+    // agregar campos en la respuesta multilínea del monitoreo.
+    metrics_add_user_site("alice", "evil\nfake.example 80", "80", true);
+
+    char lines[4][ACCESS_LOG_LINE_LEN];
+    int n = metrics_get_access_log(NULL, lines, 4);
+
+    ck_assert_int_eq(1, n);
+    ck_assert_ptr_null(strchr(lines[0], '\n'));
+    ck_assert_ptr_nonnull(strstr(lines[0], "evil?fake.example?80:80"));
+
+    metrics_free();
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("metrics");
@@ -119,6 +138,7 @@ suite(void) {
     tcase_add_test(tc, test_access_log_filters_by_username);
     tcase_add_test(tc, test_access_log_unknown_user_returns_none);
     tcase_add_test(tc, test_access_log_respects_max);
+    tcase_add_test(tc, test_access_log_sanitizes_framing_bytes);
     suite_add_tcase(s, tc);
 
     return s;
