@@ -203,6 +203,44 @@ START_TEST (test_start_pipelined_bad_version_errors) {
 }
 END_TEST
 
+START_TEST (test_start_rejects_embedded_nul_in_username) {
+    struct test_conn t;
+    conn_init(&t);
+    const uint8_t auth[] = {
+        0x01, 0x08, 'u', 's', 'e', 'r', 0x00, 'e', 'v', 'i',
+        0x04, 'p', 'a', 's', 's',
+    };
+    buf_fill(&t.s.read_buffer, auth, sizeof(auth));
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(ERROR, auth_start(&key));
+    ck_assert_int_eq(0, g_credentials_calls);
+    ck_assert_int_eq(0, g_add_user_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_start_rejects_embedded_nul_in_password) {
+    struct test_conn t;
+    conn_init(&t);
+    const uint8_t auth[] = {
+        0x01, 0x04, 'u', 's', 'e', 'r',
+        0x08, 'p', 'a', 's', 's', 0x00, 'e', 'v', 'i',
+    };
+    buf_fill(&t.s.read_buffer, auth, sizeof(auth));
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(ERROR, auth_start(&key));
+    ck_assert_int_eq(0, g_credentials_calls);
+    ck_assert_int_eq(0, g_add_user_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
 START_TEST (test_start_pipelined_bad_credentials_still_replies) {
     // credenciales inválidas pipelineadas: igual se pasa a AUTH_WRITE con
     // STATUS de falla (la respuesta se envía antes de cerrar, RFC 1929 §2).
@@ -300,6 +338,8 @@ suite(void) {
     tcase_add_test(tc, test_start_pipelined_auth_processed_inline);
     tcase_add_test(tc, test_start_pipelined_partial_auth_then_read_completes);
     tcase_add_test(tc, test_start_pipelined_bad_version_errors);
+    tcase_add_test(tc, test_start_rejects_embedded_nul_in_username);
+    tcase_add_test(tc, test_start_rejects_embedded_nul_in_password);
     tcase_add_test(tc, test_start_pipelined_bad_credentials_still_replies);
     suite_add_tcase(s, tc);
 

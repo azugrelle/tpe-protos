@@ -55,6 +55,8 @@ enum auth_state {
     // estados terminales
     auth_done,
     auth_error_unsupported_version,
+    /** UNAME/PASSWD no pueden representarse como C-string sin truncarse */
+    auth_error_embedded_nul,
 };
 
 struct auth_parser {

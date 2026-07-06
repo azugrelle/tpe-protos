@@ -46,6 +46,10 @@ auth_parser_feed(struct auth_parser *p, const uint8_t b) {
             break;
 
         case auth_uname:
+            if(b == '\0') {
+                p->state = auth_error_embedded_nul;
+                break;
+            }
             p->username[p->uname_read++] = b;
             p->remaining--;
             if(p->remaining == 0) {
@@ -69,6 +73,10 @@ auth_parser_feed(struct auth_parser *p, const uint8_t b) {
             break;
 
         case auth_passwd:
+            if(b == '\0') {
+                p->state = auth_error_embedded_nul;
+                break;
+            }
             p->password[p->passwd_read++] = b;
             p->remaining--;
             if(p->remaining == 0) {
@@ -79,6 +87,7 @@ auth_parser_feed(struct auth_parser *p, const uint8_t b) {
 
         case auth_done:
         case auth_error_unsupported_version:
+        case auth_error_embedded_nul:
             // estados terminales: no consumen más bytes.
             break;
 
@@ -95,6 +104,7 @@ auth_is_done(const enum auth_state state, bool *errored) {
     bool ret;
     switch(state) {
         case auth_error_unsupported_version:
+        case auth_error_embedded_nul:
             if(errored != NULL) {
                 *errored = true;
             }
