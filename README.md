@@ -88,13 +88,79 @@ entre `-u` y `-a`), `-h` ayuda completa.
 
 ### Cliente de Monitoreo:
 
+El cliente se conecta por defecto al servicio de monitoreo en `127.0.0.1:8080`.
+Las credenciales deben pertenecer a un usuario administrador creado con `-a` al
+arrancar el servidor.
+
+Modo interactivo (si se omite `-a`, pide usuario y contraseña por terminal):
+
+```sh
+bin/client
+# o sin prompts de autenticación:
+bin/client -a admin:secreto
+```
+
+Dentro de la sesión, `help` muestra los comandos disponibles y `quit` la cierra.
+Los prompts y errores se escriben en `stderr`; las respuestas del servidor, en
+`stdout`, para que se puedan redirigir o procesar desde scripts.
+
+También se puede ejecutar un único comando. En este modo el cliente se autentica,
+ejecuta el comando, cierra la sesión y termina:
+
+```sh
+bin/client -a admin:secreto stats
+bin/client -a admin:secreto config timeout 30
+bin/client -a admin:secreto access-log alice
+```
+
+Para conectarse a otra dirección o puerto de monitoreo se usan `-L` y `-P`:
+
+```sh
+bin/client -L 192.0.2.10 -P 9090 -a admin:secreto stats
+```
+
+En modo one-shot, el código de salida es `0` si el servidor respondió `+OK`, `1`
+ante un error de autenticación, conexión, protocolo o una respuesta `-ERR`, y `2`
+si el comando o los argumentos locales son inválidos.
+
 <p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
 
 ### Comandos del Cliente de Monitoreo:
 
+| Comando | Descripción |
+|---|---|
+| `stats` | Muestra métricas globales del proxy. |
+| `users` | Lista los usuarios conectados en ese momento. |
+| `connections` | Muestra las conexiones actuales y el máximo concurrente. |
+| `config <param> <valor>` | Cambia `timeout` (segundos) o `buf_size` (bytes) en runtime. |
+| `add-user <user> <pass>` | Agrega un usuario común del proxy. |
+| `del-user <user>` | Elimina un usuario del proxy. |
+| `access-log [user]` | Muestra el registro de accesos completo o filtrado por usuario. |
+| `quit` | Cierra la sesión. |
+| `help` | Muestra la ayuda del cliente interactivo. |
+
+Los nombres se aceptan en la forma amigable de la tabla o como comandos del
+protocolo (`ADD_USER`, `ACCESS_LOG`, etc.). Los cambios hechos con `config`,
+`add-user` y `del-user` viven solo en memoria y se pierden al reiniciar el
+servidor. `add-user` crea usuarios comunes: no permite crear administradores.
+
+El contrato completo, incluidos formatos de respuesta, límites y parámetros de
+configuración, está en
+[`src/docs/monitoring_protocol.md`](src/docs/monitoring_protocol.md).
+
 <p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
 
 ## Limpieza:
+
+Para borrar los binarios y objetos generados en `bin/` y `obj/`:
+
+```sh
+make clean
+```
+
+Las pruebas end-to-end se documentan en
+[`src/test/integration/README.md`](src/test/integration/README.md). La sesión de
+monitoreo completa puede ejecutarse con `make integration-test`.
 
 <p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
 
