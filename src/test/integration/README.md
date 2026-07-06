@@ -72,6 +72,35 @@ salir solo") y cleanup. Sale `0` si ambos casos pasan, `1` si el drenado
 cortó la transferencia, aceptó conexiones nuevas, no salió solo o devolvió un
 exit code distinto de 0, `2` por dependencias o build.
 
+## `monitor_session.sh`
+
+Valida el cliente de monitoreo contra el server real, punta a punta. Es el
+único script cableado a make (`make integration-test`). Cuatro escenarios:
+
+1. **sesión completa via one-shot**: `stats`, `users`, `connections` y
+   `config` (válido e inválido) con su contrato de exit codes — `0` si el
+   server respondió `+OK`, `1` ante `-ERR` o login fallido (con stdout vacío:
+   el rechazo va por stderr).
+2. **uso inválido local**: aridad incorrecta o comando desconocido salen con
+   `2` **sin tocar la red** (se corre contra un puerto sin listener para
+   probar que no conecta).
+3. **REPL scripteado por stdin**: sesión multi-comando por pipe; un comando
+   desconocido no corta la sesión, el `quit` final devuelve `0`, stdout queda
+   solo con respuestas (prompts a stderr) y el password nunca se re-imprime.
+4. **caída del server entre dos comandos**: coordinado con un FIFO (un
+   heredoc entregaría todo el input junto y no habría forma de matar el
+   server "en el medio"); el cliente debe reportar la desconexión con un
+   mensaje claro y salir con exactamente `1` (≥ 128 sería un crash).
+
+```sh
+make integration-test        # o directo:
+./src/test/integration/monitor_session.sh
+```
+
+Mismas garantías que los demás: recompila server y cliente, puertos
+dinámicos, espera de listen, timeouts y cleanup. Sale `0` si los cuatro
+escenarios pasan, `1` si una aserción falla, `2` por dependencias o build.
+
 ## `multiip_shim.c`
 
 Shim de `getaddrinfo`/`freeaddrinfo` que fabrica las listas multi-IP del test

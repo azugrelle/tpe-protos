@@ -119,9 +119,14 @@ $(TEST_FOLDER)/metrics_test: src/test/metrics_test.c src/shared/metrics.c
 $(TEST_FOLDER)/hashmap_user_auth_test: src/test/hashmap_user_auth_test.c src/server/utils/hashmap.c src/server/utils/user_auth_utils.c
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) src/test/hashmap_user_auth_test.c $(CHECK_FLAGS) -o $@
+# Tests de integracion end-to-end (procesos reales, ver su README). Cada
+# script es autosuficiente; aca se cablean los que corren estables en
+# cualquier entorno.
+integration-test: all
+	src/test/integration/monitor_session.sh
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)
 	rm -rf $(OBJECTS_FOLDER)
 
-.PHONY: all server client test clean
+.PHONY: all server client test integration-test clean
