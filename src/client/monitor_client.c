@@ -66,8 +66,8 @@ usage(const char *progname, int status) {
 static void
 version(void) {
     fprintf(stderr, "socks5v monitor client version 0.0\n"
-            "ITBA Protocolos de Comunicación 2026/1 -- Grupo X\n"
-            "AQUI VA LA LICENCIA\n");
+            "ITBA Protocolos de Comunicación 2026/1 -- Grupo 22\n"
+            "(c) 2026 Grupo 22\n");
 }
 
 /** valida que `s' sea un puerto bien formado; termina con 2 si no lo es */
