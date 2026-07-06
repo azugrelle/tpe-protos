@@ -6,20 +6,29 @@
  * request/response secuencial sobre una única conexión, así que no hay nada
  * que multiplexar y `connect` + `recv`/`send` bloqueantes alcanzan.
  *
- * Códigos de salida: 0 éxito, 1 error de conexión o de protocolo, 2 uso
+ * Las respuestas del server salen por stdout (con flush por respuesta, para
+ * que un stdout redirigido sea observable de inmediato); los prompts y los
+ * errores van por stderr, así el output capturado por un script queda limpio.
+ *
+ * Códigos de salida: 0 éxito, 1 error de login/conexión/protocolo, 2 uso
  * inválido de la línea de comandos.
  */
 #include <errno.h>
 #include <limits.h>    // LONG_MIN et al
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
 
-#include <netdb.h>         // getaddrinfo
-#include <sys/socket.h>
-#include <unistd.h>        // close
+#include <termios.h>   // eco del password
+#include <unistd.h>    // isatty
+
+#include "include/monitor_conn.h"
+
+/** el saludo que fija el protocolo; cualquier otra cosa no es nuestro server */
+#define SERVER_GREETING "+OK monitor ready"
 
 /** argumentos de línea de comandos ya interpretados */
 struct client_args {
@@ -39,6 +48,7 @@ usage(const char *progname, int status) {
             "Usage: %s [OPTION]...\n"
             "\n"
             "   -a <name>:<pass> Credenciales del administrador del servicio de monitoreo.\n"
+            "                    Si no se indican, se piden por prompt.\n"
             "   -h               Imprime la ayuda y termina.\n"
             "   -L <conf  addr>  Dirección donde escucha el servicio de management.\n"
             "   -P <conf port>   Puerto del servicio de management.\n"
@@ -126,43 +136,150 @@ parse_client_args(const int argc, char **argv, struct client_args *args) {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Respuestas
+
+/** muestra una respuesta del server; el flush hace observable un stdout
+ *  redirigido sin esperar a que el buffer de stdio se llene */
+static void
+print_response_line(const char *line) {
+    printf("%s\n", line);
+    fflush(stdout);
+}
+
+static bool
+is_ok(const char *line) {
+    return strncmp(line, "+OK", 3) == 0
+        && (line[3] == '\0' || line[3] == ' ');
+}
+
+static bool
+is_err(const char *line) {
+    return strncmp(line, "-ERR", 4) == 0
+        && (line[4] == '\0' || line[4] == ' ');
+}
+
 /**
- * conexión TCP bloqueante al servicio de monitoreo. Resuelve con getaddrinfo
- * (acepta IPv4, IPv6 o nombre) y prueba cada candidato hasta que uno conecte.
- * Retorna el socket conectado, o -1 con el error ya reportado por stderr.
+ * valida el saludo inicial contra el contrato exacto del protocolo. Un mero
+ * "+OK" aceptaría cualquier server de cualquier protocolo parecido; acá o es
+ * nuestro server de monitoreo o no se mandan credenciales.
  */
-static int
-monitor_connect(const char *host, const char *serv) {
-    const struct addrinfo hints = {
-        .ai_family   = AF_UNSPEC,
-        .ai_socktype = SOCK_STREAM,
-    };
-    struct addrinfo *res, *rp;
-    int sock = -1;
+static bool
+check_greeting(struct monitor_conn *conn) {
+    const char *line = monitor_conn_recv_line(conn);
+    if (line == NULL) {
+        return false;
+    }
+    if (strcmp(line, SERVER_GREETING) != 0) {
+        fprintf(stderr, "protocol error: unexpected greeting\n");
+        return false;
+    }
+    print_response_line(line);
+    return true;
+}
 
-    const int err = getaddrinfo(host, serv, &hints, &res);
-    if (err != 0) {
-        fprintf(stderr, "cannot resolve %s:%s: %s\n", host, serv,
-                gai_strerror(err));
-        return -1;
-    }
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
-        sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sock == -1) {
-            continue;
-        }
-        if (connect(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;
-        }
-        close(sock);
-        sock = -1;
-    }
-    freeaddrinfo(res);
+///////////////////////////////////////////////////////////////////////////////
+// Login
 
-    if (sock == -1) {
-        fprintf(stderr, "cannot connect to %s:%s\n", host, serv);
+/**
+ * lee una línea de stdin al estilo prompt: el texto va a stderr (stdout es
+ * solo para respuestas del server) y el fin de línea se recorta. Con `hide',
+ * apaga el eco de la terminal mientras se tipea; si stdin no es una tty no
+ * hay eco que apagar y se lee igual (el password nunca se re-imprime).
+ * false ante EOF de stdin.
+ */
+static bool
+prompt_line(const char *prompt, char *out, size_t size, bool hide) {
+    fprintf(stderr, "%s", prompt);
+
+    struct termios saved;
+    bool echo_off = false;
+    if (hide && isatty(STDIN_FILENO)) {
+        if (tcgetattr(STDIN_FILENO, &saved) == 0) {
+            struct termios t = saved;
+            t.c_lflag &= ~(tcflag_t)ECHO;
+            echo_off = tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) == 0;
+        }
     }
-    return sock;
+
+    const bool ok = fgets(out, (int)size, stdin) != NULL;
+
+    if (ok && strchr(out, '\n') == NULL) {
+        // entrada más larga que el buffer: descartar el resto para que no
+        // se derrame sobre el próximo prompt
+        int ch;
+        while ((ch = getchar()) != '\n' && ch != EOF) { }
+    }
+    if (echo_off) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved);
+        fputc('\n', stderr);   // con el eco apagado, el enter no se vio
+    }
+    if (!ok) {
+        return false;
+    }
+    out[strcspn(out, "\r\n")] = '\0';
+    return true;
+}
+
+/**
+ * autentica al administrador enviando el AUTH que arma el propio cliente.
+ * Con credenciales de -a hay un único intento (lo que un script necesita);
+ * por prompt se reintenta ante el rechazo del server, pero un EOF de stdin
+ * corta sin reintentar (un pipe agotado no debe loopear).
+ */
+static bool
+login(struct monitor_conn *conn, const struct client_args *args) {
+    char user_buff[256], pass_buff[256];
+    const char *user = args->admin_user;
+    const char *pass = args->admin_pass;
+    const bool  interactive = (user == NULL);
+
+    for (;;) {
+        if (interactive) {
+            do {
+                if (!prompt_line("user: ", user_buff, sizeof(user_buff),
+                                 false)) {
+                    fprintf(stderr, "no credentials provided\n");
+                    return false;
+                }
+            } while (user_buff[0] == '\0');   // vacío: volver a preguntar
+            if (!prompt_line("password: ", pass_buff, sizeof(pass_buff),
+                             true)) {
+                fprintf(stderr, "no credentials provided\n");
+                return false;
+            }
+            user = user_buff;
+            pass = pass_buff;
+        }
+
+        char auth[MONITOR_MAX_LINE];
+        if (snprintf(auth, sizeof(auth), "AUTH %s %s", user, pass)
+            >= (int)sizeof(auth)) {
+            fprintf(stderr, "credentials too long\n");
+            return false;
+        }
+        if (!monitor_conn_send_line(conn, auth)) {
+            return false;
+        }
+
+        const char *resp = monitor_conn_recv_line(conn);
+        if (resp == NULL) {
+            return false;
+        }
+        print_response_line(resp);
+
+        if (is_ok(resp)) {
+            return true;
+        }
+        if (!is_err(resp)) {
+            fprintf(stderr, "protocol error: unexpected response\n");
+            return false;
+        }
+        if (!interactive) {
+            return false;
+        }
+        // rechazo con credenciales tipeadas: volver a preguntar
+    }
 }
 
 int
@@ -174,23 +291,16 @@ main(const int argc, char **argv) {
     // EPIPE (que se maneja localmente), no matar el proceso
     signal(SIGPIPE, SIG_IGN);
 
-    const int sock = monitor_connect(args.mng_addr, args.mng_port);
-    if (sock == -1) {
+    struct monitor_conn conn;
+    if (!monitor_conn_open(&conn, args.mng_addr, args.mng_port)) {
         return 1;
     }
 
-    // el server saluda apenas acepta la conexión
-    char greeting[512];
-    const ssize_t n = recv(sock, greeting, sizeof(greeting) - 1, 0);
-    if (n <= 0) {
-        fprintf(stderr, "server closed the connection\n");
-        close(sock);
-        return 1;
+    int ret = 1;
+    if (check_greeting(&conn) && login(&conn, &args)) {
+        ret = 0;
     }
-    greeting[n] = '\0';
-    fputs(greeting, stdout);
-    fflush(stdout);
 
-    close(sock);
-    return 0;
+    monitor_conn_close(&conn);
+    return ret;
 }
