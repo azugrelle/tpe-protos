@@ -7,10 +7,12 @@
  */
 #include <stdlib.h>  // malloc
 #include <string.h>  // memset
+#include <time.h>    // clock_gettime
 #include <unistd.h>  // close
 
 #include <sys/socket.h>
 
+#include "config.h"
 #include "stm.h"
 #include "include/socks5nio.h"
 #include "include/socks5_state.h"
@@ -84,6 +86,18 @@ socksv5_is_draining(void) {
 static const struct state_definition *
 socks5_describe_states(void);
 
+/**
+ * marca ahora como última actividad de la conexión. Único punto de refresco:
+ * lo llaman `socks5_new' y los handlers top-level, así los `state_*.c' ni se
+ * enteran de que el timeout de inactividad existe.
+ */
+static void
+socks5_touch(struct socks5 *s) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    s->last_activity = now.tv_sec;
+}
+
 /** crea un nuevo `struct socks5' (reutiliza del pool si hay disponible) */
 static struct socks5 *
 socks5_new(int client_fd) {
@@ -120,6 +134,7 @@ socks5_new(int client_fd) {
 
     ret->references = 1;
 
+    socks5_touch(ret);
     socks5_live_link(ret);
 finally:
     return ret;
@@ -314,6 +329,7 @@ socksv5_done(struct selector_key* key);
 static void
 socksv5_read(struct selector_key *key) {
     struct state_machine *stm   = &ATTACHMENT(key)->stm;
+    socks5_touch(ATTACHMENT(key));
     const enum socks_v5state st = stm_handler_read(stm, key);
 
     if(ERROR == st || DONE == st) {
@@ -324,6 +340,7 @@ socksv5_read(struct selector_key *key) {
 static void
 socksv5_write(struct selector_key *key) {
     struct state_machine *stm   = &ATTACHMENT(key)->stm;
+    socks5_touch(ATTACHMENT(key));
     const enum socks_v5state st = stm_handler_write(stm, key);
 
     if(ERROR == st || DONE == st) {
@@ -334,6 +351,9 @@ socksv5_write(struct selector_key *key) {
 static void
 socksv5_block(struct selector_key *key) {
     struct state_machine *stm   = &ATTACHMENT(key)->stm;
+    // la notificación de DNS también es progreso: sin esto, una resolución
+    // lenta dejaría a la conexión "inactiva" justo al salir de RESOLVING.
+    socks5_touch(ATTACHMENT(key));
     const enum socks_v5state st = stm_handler_block(stm, key);
 
     if(ERROR == st || DONE == st) {
@@ -393,6 +413,45 @@ socksv5_shutdown_handshakes(fd_selector s) {
                 break;
             }
             default:
+                break;
+        }
+    }
+}
+
+void
+socksv5_sweep_timeouts(fd_selector s) {
+    // el timeout se lee acá, en cada pasada, y no se guarda por conexión:
+    // así un CONFIG timeout nuevo afecta a TODAS las conexiones vivas en la
+    // próxima evaluación, sin tocar memoria viva.
+    const time_t timeout = (time_t) config_get_timeout();
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const time_t now = ts.tv_sec;
+
+    struct socks5 *next;
+    for(struct socks5 *c = live_head; c != NULL; c = next) {
+        // el cierre destruye el nodo actual: guardar el siguiente antes
+        next = c->live_next;
+        switch(stm_state(&c->stm)) {
+            // RESOLVING no se toca: mientras el hilo de DNS corre nada puede
+            // desregistrar su client_fd (notificaría sobre memoria liberada);
+            // al notificar vuelve a ser alcanzable por la pasada siguiente.
+            // DONE/ERROR ya están muriendo solas. A diferencia del barrido
+            // del apagado, COPY sí entra: una transferencia ociosa es
+            // exactamente el caso que el timeout existe para cerrar.
+            case RESOLVING:
+            case DONE:
+            case ERROR:
+                break;
+            default:
+                if(now - c->last_activity >= timeout) {
+                    struct selector_key key = {
+                        .s    = s,
+                        .fd   = c->client_fd,
+                        .data = c,
+                    };
+                    socksv5_done(&key);
+                }
                 break;
         }
     }

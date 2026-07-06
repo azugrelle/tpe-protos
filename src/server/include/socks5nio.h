@@ -43,4 +43,13 @@ socksv5_is_draining(void);
 void
 socksv5_shutdown_handshakes(fd_selector s);
 
+/**
+ * cierra las conexiones sin actividad hace más del timeout de la config
+ * (leído en cada pasada: un CONFIG timeout nuevo aplica a todas las vivas).
+ * Lo llama el loop principal en cada vuelta; la granularidad la da el
+ * select_timeout del selector. No toca RESOLVING (hilo de DNS en vuelo).
+ */
+void
+socksv5_sweep_timeouts(fd_selector s);
+
 #endif

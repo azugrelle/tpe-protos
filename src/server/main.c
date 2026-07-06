@@ -142,10 +142,14 @@ main(const int argc, char **argv) {
         err_msg = "getting server socket flags";
         goto finally;
     }
+    // 1s: es el tick del barrido de inactividad (el pselect retorna a más
+    // tardar acá aunque no haya eventos, y a la vuelta corre el barrido).
+    // Con más, un CONFIG timeout chico tardaría hasta el tick de más en
+    // aplicarse; el wakeup por segundo con el server ocioso es despreciable.
     const struct selector_init conf = {
         .signal = SIGALRM,
         .select_timeout = {
-            .tv_sec  = 10,
+            .tv_sec  = 1,
             .tv_nsec = 0,
         },
     };
@@ -250,6 +254,10 @@ main(const int argc, char **argv) {
             err_msg = "serving";
             goto finally;
         }
+        // barrido de inactividad: cierra conexiones sin actividad hace más
+        // del timeout de la config. Corre también durante el drenado (cerrar
+        // ociosas solo ayuda a que el drenado termine antes).
+        socksv5_sweep_timeouts(selector);
     }
     // salida por señal: apagado pedido, no un error (exit 0)
     fprintf(stdout, "clean shutdown\n");

@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>         // time_t
 #include <sys/socket.h>   // sockaddr_storage
 #include <netdb.h>        // addrinfo
 
@@ -311,6 +312,14 @@ struct socks5 {
     /** buffers crudos y sus vistas para I/O */
     uint8_t                       raw_buff_a[2048], raw_buff_b[2048];
     buffer                        read_buffer, write_buffer;
+
+    /**
+     * instante de la última actividad (cualquier evento despachado a la
+     * conexión), en segundos de CLOCK_MONOTONIC — reloj de pared no: un salto
+     * de NTP cerraría conexiones sanas en masa o dejaría zombies inmunes.
+     * Lo compara el barrido de inactividad contra el timeout de la config.
+     */
+    time_t                        last_activity;
 
     /** cantidad de referencias a este objeto; si es 1 se destruye */
     unsigned                      references;
