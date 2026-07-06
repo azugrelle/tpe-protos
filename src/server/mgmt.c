@@ -26,6 +26,7 @@
 #include "stm.h"
 #include "config.h"
 #include "metrics.h"
+#include "include/args.h"   // MAX_USERS: acota USERS y la reserva de respuesta
 #include "include/mgmt.h"
 #include "utils/include/user_auth_utils.h"
 
@@ -44,11 +45,10 @@
  * uno) + ".\n" final. Si no hay lugar, el parseo se pausa (backpressure) en
  * vez de truncar respuestas, y mgmt_cmd_write lo retoma al drenar.
  *
- * Reservar el peor caso evita tener que emitir listas "resumibles" (pausar a
- * mitad de una multilínea y recordar por dónde íbamos): acá el peor caso es
- * chico y acotado, así que se paga con buffer y no con maquinaria. Un comando
- * futuro con listas NO acotadas (el registro de accesos) va a necesitar
- * revisar este esquema.
+ * Reservar el peor caso evita emitir listas "resumibles" cuando el peor caso
+ * es chico y acotado: se paga con buffer y no con maquinaria. La excepción es
+ * ACCESS_LOG, cuya respuesta NO está acotada: ese comando no depende de esta
+ * reserva sino de la emisión pausable de mgmt_emit_log (ver log_lines).
  */
 #define MGMT_RESPONSE_RESERVE  (4 + MAX_USERS * MAX_USERNAME_LEN + 2)
 /**
@@ -120,6 +120,20 @@ struct mgmt_session {
      */
     bool                     closing;
 
+    /**
+     * emisión resumible de ACCESS_LOG: la respuesta completa se materializa
+     * en `log_lines' (una FOTO del historial tomada al despachar el comando,
+     * en heap porque no está acotada) y se vuelca al write buffer al ritmo
+     * que el cliente drena. `log_next' es el marcador de reanudación.
+     * log_lines != NULL significa "multilínea en curso": bloquea el despacho
+     * de nuevos comandos (sus respuestas se intercalarían en el medio) hasta
+     * que salga el `.' final. log_next == log_count con la foto aún viva
+     * quiere decir que falta solo ese `.'.
+     */
+    char                   (*log_lines)[ACCESS_LOG_LINE_LEN];
+    size_t                   log_count;
+    size_t                   log_next;
+
     /** buffers crudos y sus vistas para I/O */
     uint8_t                  raw_buff_read[MGMT_READ_BUFFER_SIZE];
     uint8_t                  raw_buff_write[MGMT_WRITE_BUFFER_SIZE];
@@ -186,6 +200,10 @@ mgmt_session_destroy(struct mgmt_session *s) {
     if(s == NULL) {
         return;
     }
+    // si el cliente murió a mitad de un ACCESS_LOG la foto sigue viva; se
+    // libera acá y no al reusar del pool (mgmt_new pisa el puntero con memset)
+    free(s->log_lines);
+    s->log_lines = NULL;
     if(pool_size < max_pool) {
         s->next = pool;
         pool    = s;
@@ -259,10 +277,54 @@ mgmt_can_respond(struct mgmt_session *s) {
     return space >= MGMT_RESPONSE_RESERVE;
 }
 
+/** true si hay una respuesta multilínea a medio emitir (ver log_lines) */
+static bool
+mgmt_emitting(const struct mgmt_session *s) {
+    return s->log_lines != NULL;
+}
+
+/**
+ * vuelca al write buffer lo que quede de la foto de ACCESS_LOG, línea por
+ * línea mientras haya lugar REAL (acá no juega MGMT_RESPONSE_RESERVE: la
+ * foto puede superar cualquier reserva posible, por eso se emite pausable
+ * en vez de exigir que la respuesta entre entera). Es el espejo del parseo
+ * pausable de mgmt_consume_lines: si la próxima línea no entra, el marcador
+ * log_next la sigue apuntando y mgmt_cmd_write reintenta tras cada drenaje
+ * del cliente. Recién cuando salió la última línea se emite el `.' final y
+ * se libera la foto (fin de la emisión).
+ */
+static void
+mgmt_emit_log(struct mgmt_session *s) {
+    if(!mgmt_emitting(s)) {
+        return;
+    }
+    size_t space;
+    while(s->log_next < s->log_count) {
+        const char *line = s->log_lines[s->log_next];
+        buffer_write_ptr(&s->write_buffer, &space);
+        if(space < strlen(line) + 1) {   // +1 por el '\n'
+            return;   // pausa: el marcador queda donde está
+        }
+        mgmt_queue_line(s, line);
+        s->log_next++;
+    }
+    buffer_write_ptr(&s->write_buffer, &space);
+    if(space < 2) {
+        return;   // falta solo el ".\n"; se reintenta en el próximo drenaje
+    }
+    mgmt_queue_line(s, ".");
+    free(s->log_lines);
+    s->log_lines = NULL;
+    s->log_count = 0;
+    s->log_next  = 0;
+}
+
 /**
  * recalcula los intereses del fd según el estado de los buffers:
- *  - OP_READ  salvo que estemos cerrando o que no haya lugar garantizado para
- *    responder (backpressure: dejar de leer hasta drenar lo pendiente).
+ *  - OP_READ  salvo que estemos cerrando, que no haya lugar garantizado para
+ *    responder (backpressure: dejar de leer hasta drenar lo pendiente) o que
+ *    haya una multilínea a medio emitir (los comandos que lleguen no podrían
+ *    despacharse hasta el `.' final; mejor frenar al cliente en el socket).
  *  - OP_WRITE mientras haya respuestas encoladas.
  */
 static selector_status
@@ -270,7 +332,8 @@ mgmt_update_interests(struct selector_key *key) {
     struct mgmt_session *s = MGMT_ATTACHMENT(key);
     unsigned interest = OP_NOOP;
 
-    if(!s->closing && mgmt_can_respond(s) && buffer_can_write(&s->read_buffer)) {
+    if(!s->closing && mgmt_can_respond(s) && !mgmt_emitting(s)
+       && buffer_can_write(&s->read_buffer)) {
         interest |= OP_READ;
     }
     if(buffer_can_read(&s->write_buffer)) {
@@ -514,14 +577,74 @@ cmd_config(struct selector_key *key, unsigned state, char *args) {
 }
 
 /**
- * stub para los comandos cuya lógica llega en tareas posteriores: el nombre
- * ya se reconoce (y exige autenticación) pero todavía no hacen nada. La
- * validación de argumentos de cada uno también llega con su implementación.
+ * ACCESS_LOG [user] -- historial de accesos, multilínea y potencialmente
+ * enorme (una línea por sitio visitado desde el arranque, sin filtro o de un
+ * solo usuario). Es el único comando cuya respuesta NO se exige que entre
+ * entera en el write buffer: acá se materializa completa en heap (una FOTO
+ * del historial al momento del comando, con las líneas ya formateadas por
+ * metrics_get_access_log) y mgmt_emit_log la drena en forma pausable.
+ *
+ * ¿Por qué foto y no iterar metrics con un marcador usuario/sitio? Porque
+ * los arreglos internos del historial (all_time_users y cada sites_visited)
+ * crecen por realloc con el tráfico del proxy: un puntero o índice guardado
+ * entre eventos del selector puede quedar colgado si llegan accesos nuevos
+ * a mitad de la emisión. La foto copia todo a memoria propia; lo que llegue
+ * durante la emisión simplemente sale en la próxima consulta.
  */
 static unsigned
-cmd_not_implemented(struct selector_key *key, unsigned state, char *args) {
-    (void)args;
-    mgmt_queue_line(MGMT_ATTACHMENT(key), "-ERR not implemented");
+cmd_access_log(struct selector_key *key, unsigned state, char *args) {
+    struct mgmt_session *s = MGMT_ATTACHMENT(key);
+
+    // 0 argumentos (todo el historial) o 1 (filtro por usuario); un espacio
+    // dentro de args significa que vino más de un argumento
+    if(args != NULL && (args[0] == '\0' || strchr(args, ' ') != NULL)) {
+        mgmt_queue_line(s, "-ERR invalid arguments");
+        return state;
+    }
+
+    // primer pase: dimensionar la respuesta sumando site_count (filtrado si
+    // corresponde). Las copias superficiales de user_info valen solo durante
+    // ESTE evento del selector -- nada puede mutar metrics en el medio.
+    const int nusers = metrics_get_all_time_user_count();
+    size_t total = 0;
+    if(nusers > 0) {
+        user_info *users = malloc((size_t)nusers * sizeof(*users));
+        if(users == NULL) {
+            mgmt_queue_line(s, "-ERR internal error");
+            return state;
+        }
+        metrics_get_all_time_users(users, nusers);
+        for(int i = 0; i < nusers; i++) {
+            if(args == NULL
+               || strncmp(users[i].username, args, MAX_USERNAME_LEN) == 0) {
+                total += (size_t)users[i].site_count;
+            }
+        }
+        free(users);
+    }
+
+    if(total == 0) {
+        // historial vacío o usuario sin accesos (o inexistente: el protocolo
+        // no distingue): multilínea vacía, no un error
+        mgmt_queue_line(s, "+OK");
+        mgmt_queue_line(s, ".");
+        return state;
+    }
+
+    // la foto se toma ANTES de encolar el `+OK': si el malloc falla, el
+    // error todavía puede ser de una sola línea (la multilínea no empezó)
+    char (*lines)[ACCESS_LOG_LINE_LEN] = malloc(total * sizeof(*lines));
+    if(lines == NULL) {
+        mgmt_queue_line(s, "-ERR internal error");
+        return state;
+    }
+    const int written = metrics_get_access_log(args, lines, (int)total);
+
+    s->log_lines = lines;
+    s->log_count = (written > 0) ? (size_t)written : 0;
+    s->log_next  = 0;
+    mgmt_queue_line(s, "+OK");
+    mgmt_emit_log(s);   // emite lo que entre ya; el resto, al drenar el cliente
     return state;
 }
 
@@ -588,9 +711,9 @@ static const struct mgmt_cmd mgmt_commands[] = {
     { .name = "USERS",       .requires_auth = true,  .handler = cmd_users           },
     { .name = "CONNECTIONS", .requires_auth = true,  .handler = cmd_connections     },
     { .name = "CONFIG",      .requires_auth = true,  .handler = cmd_config          },
-    { .name = "ADD_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
-    { .name = "DEL_USER",    .requires_auth = true,  .handler = cmd_not_implemented },
-    { .name = "ACCESS_LOG",  .requires_auth = true,  .handler = cmd_not_implemented },
+    { .name = "ADD_USER",    .requires_auth = true,  .handler = cmd_add_user        },
+    { .name = "DEL_USER",    .requires_auth = true,  .handler = cmd_del_user        },
+    { .name = "ACCESS_LOG",  .requires_auth = true,  .handler = cmd_access_log      },
 };
 
 /**
@@ -653,7 +776,10 @@ mgmt_consume_lines(struct selector_key *key) {
     struct mgmt_session *s = MGMT_ATTACHMENT(key);
     unsigned state = stm_state(&s->stm);
 
-    while(!s->closing && buffer_can_read(&s->read_buffer)) {
+    // mientras haya una multilínea a medio emitir tampoco se despacha: la
+    // respuesta del próximo comando se intercalaría dentro de la lista. Las
+    // líneas pipelineadas esperan en el read buffer hasta el `.' final.
+    while(!s->closing && !mgmt_emitting(s) && buffer_can_read(&s->read_buffer)) {
         if(!mgmt_can_respond(s)) {
             // backpressure: sin lugar garantizado para la respuesta no se
             // despacha nada. Los bytes quedan en el read buffer y
@@ -721,6 +847,10 @@ mgmt_cmd_write(struct selector_key *key) {
         return MGMT_ERROR;
     }
     buffer_read_adv(&s->write_buffer, n);
+
+    // primero retomar una multilínea pausada: la emisión tiene prioridad
+    // sobre despachar comandos nuevos (que siguen esperando en el read buffer)
+    mgmt_emit_log(s);
 
     if(!buffer_can_read(&s->write_buffer) && s->closing) {
         // la despedida (o el error fatal) ya salió completa: recién ahora se
