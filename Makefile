@@ -11,6 +11,7 @@ SHARED_SOURCES=$(wildcard src/shared/*.c)
 SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o)
 CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o)
 SHARED_OBJECTS=$(SHARED_SOURCES:src/%.c=obj/%.o)
+DEPENDENCY_FILES=$(SERVER_OBJECTS:.o=.d) $(CLIENT_OBJECTS:.o=.d) $(SHARED_OBJECTS:.o=.d)
 
 OUTPUT_FOLDER=./bin
 OBJECTS_FOLDER=./obj
@@ -136,5 +137,7 @@ integration-test: all
 clean:
 	rm -rf $(OUTPUT_FOLDER)
 	rm -rf $(OBJECTS_FOLDER)
+
+-include $(DEPENDENCY_FILES)
 
 .PHONY: all server client test integration-test clean
