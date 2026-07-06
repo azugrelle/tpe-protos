@@ -301,6 +301,8 @@ enum resp_kind {
                         donde acumular no tiene un tope defendible */
 };
 
+struct response;
+
 struct client_cmd {
     const char    *name;      /**< como lo tipea el usuario */
     const char    *proto;     /**< como viaja al server */
@@ -310,26 +312,31 @@ struct client_cmd {
      *  passwords y valores con espacios, igual que el protocolo) */
     bool           raw_tail;
     enum resp_kind kind;
+    /** decorador de la respuesta acumulada (solo RESP_MULTI); NULL = cruda */
+    void         (*format)(const struct response *resp);
     const char    *usage;
     const char    *descr;
 };
 
+static void format_key_values(const struct response *resp);
+static void format_users(const struct response *resp);
+
 static const struct client_cmd client_commands[] = {
-    { "stats",       "STATS",       0, 0, false, RESP_MULTI,
+    { "stats",       "STATS",       0, 0, false, RESP_MULTI,  format_key_values,
       "stats",                   "métricas globales del proxy" },
-    { "users",       "USERS",       0, 0, false, RESP_MULTI,
+    { "users",       "USERS",       0, 0, false, RESP_MULTI,  format_users,
       "users",                   "usuarios conectados en este momento" },
-    { "connections", "CONNECTIONS", 0, 0, false, RESP_MULTI,
+    { "connections", "CONNECTIONS", 0, 0, false, RESP_MULTI,  format_key_values,
       "connections",             "conteos de conexiones del proxy" },
-    { "config",      "CONFIG",      2, 2, true,  RESP_SINGLE,
+    { "config",      "CONFIG",      2, 2, true,  RESP_SINGLE, NULL,
       "config <param> <valor>",  "ajusta un parámetro en runtime (timeout, buf_size)" },
-    { "add-user",    "ADD_USER",    2, 2, true,  RESP_SINGLE,
+    { "add-user",    "ADD_USER",    2, 2, true,  RESP_SINGLE, NULL,
       "add-user <user> <pass>",  "alta de un usuario del proxy" },
-    { "del-user",    "DEL_USER",    1, 1, false, RESP_SINGLE,
+    { "del-user",    "DEL_USER",    1, 1, false, RESP_SINGLE, NULL,
       "del-user <user>",         "baja de un usuario del proxy" },
-    { "access-log",  "ACCESS_LOG",  0, 1, false, RESP_STREAM,
+    { "access-log",  "ACCESS_LOG",  0, 1, false, RESP_STREAM, NULL,
       "access-log [user]",       "registro de accesos, de todos o de un usuario" },
-    { "quit",        "QUIT",        0, 0, false, RESP_SINGLE,
+    { "quit",        "QUIT",        0, 0, false, RESP_SINGLE, NULL,
       "quit",                    "cierra la sesión" },
 };
 
@@ -471,6 +478,123 @@ print_response_raw(const struct response *resp) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// Decoradores de formato
+//
+// Embellecer sin ocultar: los valores que se transforman llevan el crudo
+// entre paréntesis cuando la forma humana pierde precisión, y todo lo que no
+// se reconoce (claves nuevas, líneas que no son `clave: valor') pasa tal
+// cual — un server con métricas más nuevas no se esconde ni rompe nada.
+
+/** ancho de la columna de claves (la más larga hoy ocupa 23 con su ':') */
+#define KEY_COLUMN 24
+
+static void
+format_duration(unsigned long long secs, char *out, size_t size) {
+    const unsigned long long d = secs / 86400;
+    const unsigned h = (unsigned)((secs / 3600) % 24);
+    const unsigned m = (unsigned)((secs / 60) % 60);
+    const unsigned s = (unsigned)(secs % 60);
+
+    if (d > 0) {
+        snprintf(out, size, "%llud %uh %um %us", d, h, m, s);
+    } else if (h > 0) {
+        snprintf(out, size, "%uh %um %us", h, m, s);
+    } else {
+        snprintf(out, size, "%um %us", m, s);
+    }
+}
+
+static void
+format_bytes(unsigned long long bytes, char *out, size_t size) {
+    static const char *units[] = { "KB", "MB", "GB", "TB" };
+    double   v = (double)bytes;
+    unsigned u = 0;
+
+    v /= 1024;
+    while (v >= 1024 && u < sizeof(units)/sizeof(units[0]) - 1) {
+        v /= 1024;
+        u++;
+    }
+    snprintf(out, size, "%.1f %s", v, units[u]);
+}
+
+static bool
+key_is(const char *key, size_t keylen, const char *name) {
+    return strlen(name) == keylen && strncmp(key, name, keylen) == 0;
+}
+
+/**
+ * devuelve la forma humana del valor de una clave conocida (armada en `out'),
+ * o `value' intacto si la clave no se reconoce, el valor no es un número
+ * limpio, o la forma humana no aporta (segundos < 1m, bytes < 1K).
+ */
+static const char *
+decorate_value(const char *key, size_t keylen, const char *value,
+               char *out, size_t size) {
+    char *end;
+    errno = 0;
+    const unsigned long long v = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') {
+        return value;
+    }
+
+    char human[48];
+    if (key_is(key, keylen, "uptime") && v >= 60) {
+        format_duration(v, human, sizeof(human));
+        snprintf(out, size, "%s (%llu)", human, v);
+        return out;
+    }
+    if (key_is(key, keylen, "bytes_transferred") && v >= 1024) {
+        format_bytes(v, human, sizeof(human));
+        snprintf(out, size, "%s (%llu)", human, v);
+        return out;
+    }
+    return value;
+}
+
+/** respuestas `clave: valor' (stats, connections): columnas alineadas y
+ *  valores conocidos en forma humana */
+static void
+format_key_values(const struct response *resp) {
+    for (size_t i = 0; i < resp->nlines; i++) {
+        const char *line = resp->lines[i];
+        const char *sep  = strstr(line, ": ");
+
+        if (sep == NULL || sep == line) {
+            printf("%s\n", line);   // no es `clave: valor': pasa tal cual
+            continue;
+        }
+        const size_t keylen = (size_t)(sep - line);
+        const char  *value  = sep + 2;
+
+        char key[256];
+        if (keylen + 2 > sizeof(key)) {   // clave absurda: antes que truncarla
+            printf("%s\n", line);         // (= ocultar datos), pasa tal cual
+            continue;
+        }
+        snprintf(key, sizeof(key), "%.*s:", (int)keylen, line);
+
+        char pretty[64];
+        printf("%-*s %s\n", KEY_COLUMN, key,
+               decorate_value(line, keylen, value, pretty, sizeof(pretty)));
+    }
+    fflush(stdout);
+}
+
+/** lista de usuarios activos: encabezado con conteo y nombres indentados */
+static void
+format_users(const struct response *resp) {
+    printf("active users (%zu):\n", resp->nlines);
+    if (resp->nlines == 0) {
+        printf("  (none)\n");
+    }
+    for (size_t i = 0; i < resp->nlines; i++) {
+        printf("  %s\n", resp->lines[i]);
+    }
+    fflush(stdout);
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // Ejecución de comandos
 
 /**
@@ -543,7 +667,11 @@ run_command(struct monitor_conn *conn, const struct client_cmd *cmd,
             return false;
         }
     }
-    print_response_raw(&resp);
+    if (cmd->format != NULL) {
+        cmd->format(&resp);
+    } else {
+        print_response_raw(&resp);
+    }
     return true;
 }
 
