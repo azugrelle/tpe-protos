@@ -273,15 +273,14 @@ struct socks5 {
      */
     uint8_t                       reply_rep;
 
+    /** usuario autenticado (RFC1929) o "anonymous" si no hubo auth */
+    char                          username[SOCKS_AUTH_MAX_LEN];
+
     /**
      * resolución del destino, lista para `connect'. Para un FQDN la deja el
      * hilo de DNS antes de notificar (RESOLVING); para literales la deja
      * `connect_resolve' inline. Se libera al destruir.
      */
-    /** usuario autenticado (RFC1929) o "anonymous" si no hubo auth */
-    char                          username[SOCKS_AUTH_MAX_LEN];
-
-    /** resolución del origin server (DNS async); se libera al destruir */
     struct addrinfo              *origin_resolution;
     /**
      * rc del `getaddrinfo' corrido en el hilo de DNS (0 éxito, EAI_* en
