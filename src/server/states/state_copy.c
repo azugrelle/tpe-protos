@@ -26,11 +26,11 @@
  * termina (DONE) cuando ambos `duplex' quedan en OP_NOOP: los dos sentidos
  * vieron EOF y no queda nada por escribir.
  */
-#include <errno.h>
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "include/state_copy.h"
 #include "metrics.h"
+#include "netutils.h"     // transient_io_error
 
 /** ¿el evento vino del cliente o del origen? */
 static struct copy *
@@ -136,11 +136,7 @@ copy_r(struct selector_key *key) {
 
     n = recv(key->fd, ptr, count, 0);
     if(n == -1) {
-        if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            // no es error: el selector es level-triggered y redispara.
-            return COPY;
-        }
-        return ERROR;
+        return transient_io_error() ? COPY : ERROR;
     }
     if(n == 0) {
         // EOF: terminó el sentido que entra por este fd. Ya no se lee más de
@@ -181,10 +177,7 @@ copy_w(struct selector_key *key) {
 
     n = send(key->fd, ptr, count, MSG_NOSIGNAL);
     if(n == -1) {
-        if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            return COPY;
-        }
-        return ERROR;
+        return transient_io_error() ? COPY : ERROR;
     }
 
     buffer_read_adv(d->wb, n);

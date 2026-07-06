@@ -291,6 +291,44 @@ START_TEST (test_start_pipelined_invalid_request_replies_error) {
 }
 END_TEST
 
+START_TEST (test_read_spurious_wakeup_keeps_reading) {
+    // select puede reportar el fd legible y que el recv igual devuelva EAGAIN
+    // (man 2 select, BUGS): no debe matar la conexión, solo seguir esperando.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(REQUEST_READ, request_start(&key));
+    // socket no bloqueante sin datos pendientes: el recv da EAGAIN real
+    unsigned st = request_read(&key);
+
+    ck_assert_uint_eq(REQUEST_READ, st);
+    ck_assert_int_eq(0, g_connect_start_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_read_eof_closes_cleanly) {
+    // el cliente cierra antes de completar el REQUEST: es un cierre del peer
+    // (DONE), no un error del server.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(REQUEST_READ, request_start(&key));
+    shutdown(t.client_peer, SHUT_WR);   // el recv del server verá EOF
+    unsigned st = request_read(&key);
+
+    ck_assert_uint_eq(DONE, st);
+    ck_assert_int_eq(0, g_connect_start_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("state_request");
@@ -308,6 +346,11 @@ suite(void) {
     tcase_add_test(tc_start, test_start_pipelined_partial_request_then_read_completes);
     tcase_add_test(tc_start, test_start_pipelined_invalid_request_replies_error);
     suite_add_tcase(s, tc_start);
+
+    TCase *tc_read = tcase_create("request_read");
+    tcase_add_test(tc_read, test_read_spurious_wakeup_keeps_reading);
+    tcase_add_test(tc_read, test_read_eof_closes_cleanly);
+    suite_add_tcase(s, tc_read);
 
     return s;
 }

@@ -1,9 +1,23 @@
 #ifndef NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 #define NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 
+#include <errno.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 
 #include "buffer.h"
+
+/**
+ * true si el -1 de un recv/send es transitorio y no debe matar la conexión:
+ * select puede reportar un fd como listo y que la operación igual falle con
+ * EAGAIN/EWOULDBLOCK (man 2 select, BUGS), y EINTR es un corte por señal.
+ * Con un selector level-triggered alcanza con permanecer en el mismo estado
+ * y esperar el próximo evento.
+ */
+static inline bool
+transient_io_error(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
 
 #define SOCKADDR_TO_HUMAN_MIN (INET6_ADDRSTRLEN + 5 + 1)
 /**

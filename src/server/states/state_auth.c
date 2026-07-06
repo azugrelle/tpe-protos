@@ -6,6 +6,7 @@
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "metrics.h"                        // metrics_add_user (usuarios activos)
+#include "netutils.h"                       // transient_io_error
 #include "include/state_auth.h"
 #include "include/state_request.h"          // request_start es el próximo paso
 #include "utils/include/user_auth_utils.h"  // check_if_valid_credentials
@@ -95,8 +96,11 @@ auth_read(struct selector_key *key) {
 
     ptr = buffer_write_ptr(d->rb, &count);
     n = recv(key->fd, ptr, count, 0);
-    if(n <= 0) {
-        return ERROR;
+    if(n == -1) {
+        return transient_io_error() ? AUTH_READ : ERROR;
+    }
+    if(n == 0) {
+        return DONE;   // EOF: el cliente cerró antes de completar el mensaje
     }
     buffer_write_adv(d->rb, n);
     return auth_consume_buffer(key);
@@ -122,7 +126,9 @@ auth_write(struct selector_key *key) {
     ptr = buffer_read_ptr(d->wb, &count);
     n = send(key->fd, ptr, count, MSG_NOSIGNAL);
     if(n == -1) {
-        ret = ERROR;
+        if(!transient_io_error()) {
+            ret = ERROR;
+        }
     } else {
         buffer_read_adv(d->wb, n);
         if(!buffer_can_read(d->wb)) {

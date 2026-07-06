@@ -26,6 +26,7 @@
 #include "stm.h"
 #include "config.h"
 #include "metrics.h"
+#include "netutils.h"    // transient_io_error
 #include "include/args.h"   // MAX_USERS: acota USERS y la reserva de respuesta
 #include "include/mgmt.h"
 #include "utils/include/user_auth_utils.h"
@@ -833,7 +834,7 @@ mgmt_cmd_read(struct selector_key *key) {
         return MGMT_DONE;    // el cliente cerró ordenadamente
     }
     if(n < 0) {
-        return MGMT_ERROR;
+        return transient_io_error() ? stm_state(&s->stm) : MGMT_ERROR;
     }
     buffer_write_adv(&s->read_buffer, n);
     return mgmt_consume_lines(key);
@@ -848,7 +849,7 @@ mgmt_cmd_write(struct selector_key *key) {
 
     const ssize_t n = send(key->fd, ptr, count, MSG_NOSIGNAL);
     if(n == -1) {
-        return MGMT_ERROR;
+        return transient_io_error() ? stm_state(&s->stm) : MGMT_ERROR;
     }
     buffer_read_adv(&s->write_buffer, n);
 

@@ -229,6 +229,44 @@ START_TEST (test_start_pipelined_bad_credentials_still_replies) {
 }
 END_TEST
 
+START_TEST (test_read_spurious_wakeup_keeps_reading) {
+    // select puede reportar el fd legible y que el recv igual devuelva EAGAIN
+    // (man 2 select, BUGS): no debe matar la conexión, solo seguir esperando.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(AUTH_READ, auth_start(&key));
+    // socket no bloqueante sin datos pendientes: el recv da EAGAIN real
+    unsigned st = auth_read(&key);
+
+    ck_assert_uint_eq(AUTH_READ, st);
+    ck_assert_int_eq(0, g_credentials_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_read_eof_closes_cleanly) {
+    // el cliente cierra antes de completar el subnegotiation: es un cierre
+    // del peer (DONE), no un error del server.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = { .s = NULL, .fd = t.s.client_fd, .data = &t.s };
+
+    reset_injection();
+    ck_assert_uint_eq(AUTH_READ, auth_start(&key));
+    shutdown(t.client_peer, SHUT_WR);   // el recv del server verá EOF
+    unsigned st = auth_read(&key);
+
+    ck_assert_uint_eq(DONE, st);
+    ck_assert_int_eq(0, g_credentials_calls);
+
+    conn_close(&t);
+}
+END_TEST
+
 START_TEST (test_write_success_hands_off_to_request_start) {
     // respuesta de éxito drenada: auth_write delega en request_start, que es
     // quien procesa un REQUEST pipelineado si ya está en el read_buffer.
@@ -264,6 +302,11 @@ suite(void) {
     tcase_add_test(tc, test_start_pipelined_bad_version_errors);
     tcase_add_test(tc, test_start_pipelined_bad_credentials_still_replies);
     suite_add_tcase(s, tc);
+
+    TCase *tc_read = tcase_create("auth_read");
+    tcase_add_test(tc_read, test_read_spurious_wakeup_keeps_reading);
+    tcase_add_test(tc_read, test_read_eof_closes_cleanly);
+    suite_add_tcase(s, tc_read);
 
     TCase *tc_write = tcase_create("auth_write");
     tcase_add_test(tc_write, test_write_success_hands_off_to_request_start);

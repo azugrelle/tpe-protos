@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
+#include "netutils.h"     // transient_io_error
 #include "include/state_hello.h"
 #include "include/state_auth.h"      // auth_start es el próximo paso si se autentica
 #include "include/state_request.h"   // request_start es el próximo paso si no
@@ -76,7 +77,9 @@ hello_read(struct selector_key *key) {
                 ret = ERROR;
             }
         }
-    } else {
+    } else if(n == 0) {
+        ret = DONE;   // EOF: el cliente cerró antes de completar el hello
+    } else if(!transient_io_error()) {
         ret = ERROR;
     }
 
@@ -103,7 +106,9 @@ hello_write(struct selector_key *key) {
     ptr = buffer_read_ptr(d->wb, &count);
     n = send(key->fd, ptr, count, MSG_NOSIGNAL);
     if(n == -1) {
-        ret = ERROR;
+        if(!transient_io_error()) {
+            ret = ERROR;
+        }
     } else {
         buffer_read_adv(d->wb, n);
         if(!buffer_can_read(d->wb)) {

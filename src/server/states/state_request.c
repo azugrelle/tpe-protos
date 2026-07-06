@@ -10,6 +10,7 @@
 #include <stdio.h>        // fprintf
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
+#include "netutils.h"     // transient_io_error
 #include "include/state_request.h"
 #include "include/state_connect.h"
 #include "include/state_copy.h"
@@ -128,8 +129,11 @@ request_read(struct selector_key *key) {
 
     ptr = buffer_write_ptr(d->rb, &count);
     n = recv(key->fd, ptr, count, 0);
-    if(n <= 0) {
-        return ERROR;
+    if(n == -1) {
+        return transient_io_error() ? REQUEST_READ : ERROR;
+    }
+    if(n == 0) {
+        return DONE;   // EOF: el cliente cerró antes de completar el REQUEST
     }
     buffer_write_adv(d->rb, n);
     return request_consume_buffer(key);
@@ -147,7 +151,7 @@ request_write(struct selector_key *key) {
     ptr = buffer_read_ptr(d->wb, &count);
     n = send(key->fd, ptr, count, MSG_NOSIGNAL);
     if(n == -1) {
-        return ERROR;
+        return transient_io_error() ? REQUEST_WRITE : ERROR;
     }
     buffer_read_adv(d->wb, n);
     if(buffer_can_read(d->wb)) {
