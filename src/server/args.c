@@ -12,15 +12,15 @@ static unsigned short
 port(const char* s)
 {
     char* end = 0;
+    errno = 0;
     const long sl = strtol(s, &end, 10);
 
     if (end == s || '\0' != *end
-        || ((LONG_MIN == sl || LONG_MAX == sl) && ERANGE == errno)
-        || sl < 0 || sl > USHRT_MAX)
+        || errno == ERANGE
+        || sl < 1 || sl > USHRT_MAX)
     {
-        fprintf(stderr, "port should in in the range of 1-65536: %s\n", s);
+        fprintf(stderr, "port should be in the range 1-65535: %s\n", s);
         exit(1);
-        return 1;
     }
     return (unsigned short)sl;
 }
@@ -38,6 +38,11 @@ user(char* s, struct users* user)
     {
         *p = 0;
         p++;
+        if (*s == '\0' || *p == '\0')
+        {
+            fprintf(stderr, "user and password must not be empty\n");
+            exit(1);
+        }
         user->name = s;
         user->pass = p;
     }
@@ -52,7 +57,7 @@ version(void)
 }
 
 static void
-usage(const char* progname)
+usage(const char* progname, int status)
 {
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
@@ -72,7 +77,7 @@ usage(const char* progname)
 
             "\n",
             progname);
-    exit(1);
+    exit(status);
 }
 
 void
@@ -103,7 +108,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
         switch (c)
         {
         case 'h':
-            usage(argv[0]);
+            usage(argv[0], 0);
             break;
         case 'l':
             args->socks_addr = optarg;
