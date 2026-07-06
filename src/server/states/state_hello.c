@@ -14,12 +14,14 @@ static void
 on_hello_method(struct hello_parser *p, const uint8_t method) {
     uint8_t *selected  = p->data;
 
-    if(SOCKS_HELLO_USERNAME_PASSWORD == method) {
-        // siempre preferido si el cliente lo ofrece, sin importar el orden.
+    if(SOCKS_HELLO_USERNAME_PASSWORD == method && auth_is_required()) {
+        // preferido si el cliente lo ofrece y hay tabla de usuarios contra
+        // la cual validar, sin importar el orden.
         *selected = method;
     } else if(SOCKS_HELLO_NOAUTHENTICATION_REQUIRED == method
-              && *selected != SOCKS_HELLO_USERNAME_PASSWORD
-            && !auth_is_required()) {
+              && !auth_is_required()) {
+        // si no se exige auth, no-auth siempre gana: elegir user/pass sin
+        // usuarios cargados garantiza que la autenticación falle siempre.
         *selected = method;
     }
 }
