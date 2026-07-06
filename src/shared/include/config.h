@@ -24,8 +24,17 @@
 #define CONFIG_TIMEOUT_MAX      86400
 #define CONFIG_TIMEOUT_DEFAULT  300
 
-/** tamaño de los buffers de I/O de una conexión del proxy, en bytes (máx
- *  1 MiB). El default replica el tamaño histórico de `struct socks5'. */
+/**
+ * tamaño de los buffers de I/O de una conexión del proxy, en bytes (máx
+ * 1 MiB). El default replica el tamaño histórico de `struct socks5'.
+ *
+ * El mínimo lo fija la respuesta más grande que se serializa ENTERA de un
+ * marshall: el reply del REQUEST con BND.ADDR IPv6 (VER+REP+RSV+ATYP + 16 de
+ * dirección + 2 de puerto = 22 bytes). Con menos, una conexión nueva no puede
+ * responder y muere; la lectura no impone mínimo (los parsers consumen de a
+ * bytes).
+ */
+#define CONFIG_BUF_SIZE_MIN     22
 #define CONFIG_BUF_SIZE_MAX     1048576
 #define CONFIG_BUF_SIZE_DEFAULT 2048
 

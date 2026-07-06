@@ -563,7 +563,11 @@ cmd_config(struct selector_key *key, unsigned state, char *args) {
         }
         config_set_timeout((unsigned)v);
     } else if(strcmp(args, "buf_size") == 0) {
-        if(!parse_positive_int(value, CONFIG_BUF_SIZE_MAX, &v)) {
+        // además del rango numérico, un piso: por debajo de
+        // CONFIG_BUF_SIZE_MIN el proxy no puede serializar sus respuestas
+        // (ver config.h) y toda conexión nueva nacería muerta.
+        if(!parse_positive_int(value, CONFIG_BUF_SIZE_MAX, &v)
+           || v < CONFIG_BUF_SIZE_MIN) {
             mgmt_queue_line(s, "-ERR invalid value");
             return state;
         }

@@ -110,11 +110,13 @@ Si la lista está vacía:
   activas): es un umbral de inactividad que se relee en cada barrido, no memoria que haya
   que tocar. Un cambio se refleja dentro de ~1s (granularidad del barrido) sobre
   cualquier conexión existente.
-- `buf_size`: entero positivo, en bytes, máximo 1048576 (1 MiB). Mismas reglas de
-  validación. Aplica **solo a conexiones nuevas** (cambiar el tamaño de un buffer ya en
-  uso por una conexión activa no es trivial con la infraestructura provista; se
-  recomienda no bajar de ~512 bytes por rendimiento, aunque no hay mínimo forzado más
-  allá de rechazar `0`).
+- `buf_size`: entero en bytes, mínimo 22, máximo 1048576 (1 MiB). Mismas reglas de
+  validación (fuera de rango o no numérico → `-ERR invalid value`). Aplica **solo a
+  conexiones nuevas** (cambiar el tamaño de un buffer ya en uso por una conexión activa
+  no es trivial con la infraestructura provista). El mínimo de 22 es el tamaño de la
+  respuesta más grande que el proxy serializa entera (el reply del REQUEST con BND.ADDR
+  IPv6: 4 bytes de cabecera + 16 de dirección + 2 de puerto); por debajo, toda conexión
+  nueva fallaría al responder. Por rendimiento se recomienda no bajar de ~512 bytes.
 
 ### Límite de usuarios
 `MAX_USERS` está definido en `args.h` (10). `ADD_USER` sobre la tabla llena devuelve
