@@ -5,6 +5,7 @@
 #include <string.h>       // strncpy
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
+#include "metrics.h"                        // metrics_add_user (usuarios activos)
 #include "include/state_auth.h"
 #include "include/state_request.h"          // request_start es el próximo paso
 #include "utils/include/user_auth_utils.h"  // check_if_valid_credentials
@@ -22,6 +23,9 @@ auth_process(struct selector_key *key) {
         // queda disponible para el resto de la conexión (p. ej. ACCESS_LOG).
         strncpy(s->username, (const char *) d->parser.username, sizeof(s->username) - 1);
         s->username[sizeof(s->username) - 1] = '\0';
+        // alta como usuario activo (comandos USERS/STATS del monitoreo); la
+        // baja la hace socks5_destroy al morir la conexión
+        metrics_add_user(s->username);
     }
     if(-1 == auth_marshall(d->wb, d->status)) {
         ret = ERROR;

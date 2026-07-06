@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 
 #include "config.h"
+#include "metrics.h"
 #include "stm.h"
 #include "include/socks5nio.h"
 #include "include/socks5_state.h"
@@ -102,6 +103,15 @@ socks5_touch(struct socks5 *s) {
 static struct socks5 *
 socks5_new(int client_fd) {
     struct socks5 *ret;
+
+    // tope de conexiones concurrentes (MAX_CONNECTIONS = 511: dos fds por
+    // conexión más los pasivos entran justo en el FD_SETSIZE de select).
+    // Chequear acá y contabilizar recién al final del camino feliz es seguro
+    // porque todo corre en el hilo del selector: no hay carrera entre ambos.
+    if(metrics_get_current_connections() >= MAX_CONNECTIONS) {
+        return NULL;
+    }
+
     // los buffers de una estructura reciclada sobreviven al memset: se
     // guardan acá y, si el tamaño configurado no cambió, se reusan.
     uint8_t *buff_a   = NULL, *buff_b = NULL;
@@ -164,6 +174,7 @@ socks5_new(int client_fd) {
 
     socks5_touch(ret);
     socks5_live_link(ret);
+    metrics_connection_start();   // la baja está junto a live_unlink, 1:1
 finally:
     return ret;
 }
@@ -208,6 +219,11 @@ socks5_destroy(struct socks5 *s) {
         // última referencia: la conexión deja de estar viva (el camino de
         // references -= 1 no toca la lista: todavía queda quien la use).
         socks5_live_unlink(s);
+        // espejo del alta al final de socks5_new. remove_user es no-op si la
+        // conexión nunca pasó un AUTH exitoso ("anonymous" no está en la
+        // lista de activos de metrics).
+        metrics_connection_end();
+        metrics_remove_user(s->username);
         // liberar recursos por-conexión antes de poolear, porque el pool
         // reutiliza la estructura sin pasar por socks5_destroy_.
         socks5_cleanup(s);
