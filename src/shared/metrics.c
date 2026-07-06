@@ -221,34 +221,51 @@ metrics_add_user_site(const char *username, char *site, char *port, bool success
         return;
     }
     user_info *u = &all_time_users[at];
-    // Crece el arreglo de sitios de a GROW_STEP.
-    if (u->site_count % GROW_STEP == 0) {
-        int new_cap = u->site_count + GROW_STEP;
-        site_visit *grown = realloc(u->sites_visited, (size_t)new_cap * sizeof(site_visit));
-        if (grown == NULL) {
-            return;
+    site_visit *v;
+    if (u->site_count == MAX_SITES_PER_USER) {
+        // ring lleno: se pisa la visita más vieja (site_start) y el inicio
+        // avanza. El conteo ya no cambia; solo rota qué N visitas se guardan.
+        v = &u->sites_visited[u->site_start];
+        free(v->destination_host);
+        free(v->destination_port);
+        u->site_start = (u->site_start + 1) % MAX_SITES_PER_USER;
+    } else {
+        // Crece el arreglo de sitios de a GROW_STEP, con techo en el ring.
+        if (u->site_count % GROW_STEP == 0) {
+            int new_cap = u->site_count + GROW_STEP;
+            if (new_cap > MAX_SITES_PER_USER) {
+                new_cap = MAX_SITES_PER_USER;
+            }
+            site_visit *grown = realloc(u->sites_visited, (size_t)new_cap * sizeof(site_visit));
+            if (grown == NULL) {
+                return;
+            }
+            u->sites_visited = grown;
         }
-        u->sites_visited = grown;
+        v = &u->sites_visited[u->site_count];
+        u->site_count++;
     }
-    site_visit *v = &u->sites_visited[u->site_count];
     v->destination_host = dup_str(site);
     v->destination_port = dup_str(port);
     sanitize_field(v->destination_host);
     sanitize_field(v->destination_port);
     v->timestamp = time(NULL);
     v->success = success;
-    u->site_count++;
     u->last_seen = time(NULL);
 }
 
 void
 metrics_free(void) {
     for (int i = 0; i < all_time_count; i++) {
-        for (int j = 0; j < all_time_users[i].site_count; j++) {
-            free(all_time_users[i].sites_visited[j].destination_host);
-            free(all_time_users[i].sites_visited[j].destination_port);
+        user_info *u = &all_time_users[i];
+        for (int j = 0; j < u->site_count; j++) {
+            // recorre solo los slots ocupados del ring (con él lleno son
+            // todos; si no, site_start es 0 y son los primeros site_count)
+            site_visit *v = &u->sites_visited[(u->site_start + j) % MAX_SITES_PER_USER];
+            free(v->destination_host);
+            free(v->destination_port);
         }
-        free(all_time_users[i].sites_visited);
+        free(u->sites_visited);
     }
     free(all_time_users);
     all_time_users = NULL;
@@ -340,7 +357,9 @@ metrics_get_access_log(const char *username, char out[][ACCESS_LOG_LINE_LEN], in
             continue;
         }
         for (int j = 0; j < u->site_count && n < max; j++) {
-            const site_visit *v = &u->sites_visited[j];
+            // del más viejo al más nuevo, arrancando en site_start (ring)
+            const site_visit *v =
+                &u->sites_visited[(u->site_start + j) % MAX_SITES_PER_USER];
 
             struct tm tm_utc;
             gmtime_r(&v->timestamp, &tm_utc);

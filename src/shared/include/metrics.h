@@ -34,6 +34,16 @@
 /** largo máximo de una línea de ACCESS_LOG formateada (ver metrics_get_access_log) */
 #define ACCESS_LOG_LINE_LEN 600
 
+/**
+ * tope de historial por usuario: se conservan las últimas N visitas y las más
+ * viejas se pisan (ring buffer). Sin tope, un cliente en loop de CONNECTs
+ * haría crecer la memoria del proceso sin límite (~300 bytes por intento) y
+ * agrandaría sin cota la foto que ACCESS_LOG materializa por consulta. Se
+ * descarta lo viejo y no lo nuevo porque el caso de uso del registro es la
+ * queja *reciente* ("quién se conectó a tal sitio y cuándo").
+ */
+#define MAX_SITES_PER_USER 512
+
 /** Un sitio visitado por un usuario (para ACCESS_LOG). */
 typedef struct {
     char *destination_host;
@@ -46,8 +56,13 @@ typedef struct {
 typedef struct {
     char username[MAX_USERNAME_LEN];
     time_t last_seen;
-    site_visit *sites_visited;  // arreglo dinámico (crece de a 10)
-    int site_count;
+    /** ring de visitas: crece de a 10 hasta MAX_SITES_PER_USER y ahí pisa lo
+     *  más viejo. site_start apunta a la visita más antigua; el orden
+     *  cronológico es (site_start + k) % MAX_SITES_PER_USER con k en
+     *  [0, site_count). Mientras no está lleno, site_start es 0. */
+    site_visit *sites_visited;
+    int site_count;   // visitas conservadas (<= MAX_SITES_PER_USER)
+    int site_start;
 } user_info;
 
 /** Fotografía compacta de las métricas globales (comando STATS). */
@@ -80,7 +95,8 @@ void metrics_add_user(const char *username);
  *  al morir su última conexión. */
 void metrics_remove_user(const char *username);
 
-/** Registra un sitio visitado por un usuario (queda en el histórico). */
+/** Registra un sitio visitado por un usuario. Se conservan las últimas
+ *  MAX_SITES_PER_USER visitas de cada uno; las más viejas se descartan. */
 void metrics_add_user_site(const char *username, char *site, char *port, bool success);
 
 /** Libera toda la memoria dinámica del módulo. */

@@ -139,6 +139,13 @@ sobreviven un reinicio del proceso.
 - `timestamp`: ISO 8601, `YYYY-MM-DDThh:mm:ssZ` (UTC).
 - `status`: `SUCCESS` o `FAIL`.
 
+**Retención:** el servidor conserva las **últimas 512 visitas por usuario**; al
+superarse ese tope se descartan las más antiguas (ring buffer). Acota la memoria
+del historial (que es volátil y crecería sin límite con un cliente en loop de
+CONNECTs) y se descarta lo viejo —no lo nuevo— porque el caso de uso del registro
+es investigar accesos recientes. Las líneas salen agrupadas por usuario, en orden
+cronológico dentro de cada usuario.
+
 Ejemplo:
 ```
 alice www.google.com:80 2025-07-15T01:29:41Z SUCCESS
