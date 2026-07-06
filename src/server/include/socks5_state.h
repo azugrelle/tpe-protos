@@ -309,8 +309,14 @@ struct socks5 {
         struct copy               copy;
     } orig;
 
-    /** buffers crudos y sus vistas para I/O */
-    uint8_t                       raw_buff_a[2048], raw_buff_b[2048];
+    /**
+     * buffers crudos de I/O (heap) y sus vistas. El tamaño lo fija la config
+     * al crear la conexión: las nuevas nacen con el valor vigente de
+     * `buf_size'; las vivas conservan el suyo hasta morir (realojar buffers
+     * con datos en vuelo no tiene nada a favor).
+     */
+    uint8_t                      *raw_buff_a, *raw_buff_b;
+    size_t                        buf_size;
     buffer                        read_buffer, write_buffer;
 
     /**

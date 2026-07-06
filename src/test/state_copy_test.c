@@ -112,6 +112,9 @@ __wrap_shutdown(int fd, int how) {
 
 struct test_conn {
     struct socks5 s;
+    // respaldo de los buffers de I/O: en el server viven en el heap
+    // (dimensionados por la config); el harness los provee embebidos
+    uint8_t       buff_a[2048], buff_b[2048];
     int           client_peer;
     int           origin_peer;
 };
@@ -131,8 +134,11 @@ conn_init(struct test_conn *t) {
     ck_assert_int_ne(-1, fcntl(t->s.client_fd, F_SETFL, O_NONBLOCK));
     ck_assert_int_ne(-1, fcntl(t->s.origin_fd, F_SETFL, O_NONBLOCK));
 
-    buffer_init(&t->s.read_buffer,  N(t->s.raw_buff_a), t->s.raw_buff_a);
-    buffer_init(&t->s.write_buffer, N(t->s.raw_buff_b), t->s.raw_buff_b);
+    t->s.raw_buff_a = t->buff_a;
+    t->s.raw_buff_b = t->buff_b;
+    t->s.buf_size   = sizeof(t->buff_a);
+    buffer_init(&t->s.read_buffer,  t->s.buf_size, t->s.raw_buff_a);
+    buffer_init(&t->s.write_buffer, t->s.buf_size, t->s.raw_buff_b);
 }
 
 static void

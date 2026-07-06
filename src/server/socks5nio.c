@@ -102,6 +102,10 @@ socks5_touch(struct socks5 *s) {
 static struct socks5 *
 socks5_new(int client_fd) {
     struct socks5 *ret;
+    // los buffers de una estructura reciclada sobreviven al memset: se
+    // guardan acá y, si el tamaño configurado no cambió, se reusan.
+    uint8_t *buff_a   = NULL, *buff_b = NULL;
+    size_t   buf_size = 0;
 
     if(pool == NULL) {
         ret = malloc(sizeof(*ret));
@@ -109,11 +113,35 @@ socks5_new(int client_fd) {
         ret       = pool;
         pool      = pool->next;
         ret->next = 0;
+        buff_a    = ret->raw_buff_a;
+        buff_b    = ret->raw_buff_b;
+        buf_size  = ret->buf_size;
     }
     if(ret == NULL) {
         goto finally;
     }
     memset(ret, 0x00, sizeof(*ret));
+
+    // el tamaño lo dicta la config en ESTE momento: un CONFIG buf_size nuevo
+    // aplica a las conexiones que nacen de acá en más; las vivas conservan
+    // el suyo hasta morir.
+    const size_t wanted = config_get_buf_size();
+    if(buf_size != wanted) {
+        free(buff_a);
+        free(buff_b);
+        buff_a = malloc(wanted);
+        buff_b = malloc(wanted);
+        if(buff_a == NULL || buff_b == NULL) {
+            free(buff_a);
+            free(buff_b);
+            free(ret);
+            ret = NULL;
+            goto finally;
+        }
+    }
+    ret->raw_buff_a = buff_a;
+    ret->raw_buff_b = buff_b;
+    ret->buf_size   = wanted;
 
     ret->origin_fd       = -1;
     ret->client_fd       = client_fd;
@@ -129,8 +157,8 @@ socks5_new(int client_fd) {
     ret->stm.states      = socks5_describe_states();
     stm_init(&ret->stm);
 
-    buffer_init(&ret->read_buffer,  N(ret->raw_buff_a), ret->raw_buff_a);
-    buffer_init(&ret->write_buffer, N(ret->raw_buff_b), ret->raw_buff_b);
+    buffer_init(&ret->read_buffer,  ret->buf_size, ret->raw_buff_a);
+    buffer_init(&ret->write_buffer, ret->buf_size, ret->raw_buff_b);
 
     ret->references = 1;
 
@@ -163,6 +191,8 @@ socks5_cleanup(struct socks5 *s) {
 static void
 socks5_destroy_(struct socks5* s) {
     socks5_cleanup(s);
+    free(s->raw_buff_a);
+    free(s->raw_buff_b);
     free(s);
 }
 
@@ -198,6 +228,9 @@ socksv5_pool_destroy(void) {
     struct socks5 *next, *s;
     for(s = pool; s != NULL ; s = next) {
         next = s->next;
+        // las estructuras del pool guardan sus buffers vivos para reusarlos
+        free(s->raw_buff_a);
+        free(s->raw_buff_b);
         free(s);
     }
 }
