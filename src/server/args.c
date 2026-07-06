@@ -59,7 +59,9 @@ usage(const char* progname)
             "\n"
             "   -a <name>:<pass> Usuario administrador: puede usar el proxy y ademas\n"
             "                    autenticarse en el servicio de management. Comparte\n"
-            "                    el limite de 10 usuarios con -u.\n"
+            "                    el limite de 10 usuarios con -u. Sin al menos un -a\n"
+            "                    el management queda inutilizable: los admins no\n"
+            "                    pueden crearse en runtime.\n"
             "   -h               Imprime la ayuda y termina.\n"
             "   -l <SOCKS addr>  Dirección donde servirá el proxy SOCKS.\n"
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
@@ -153,5 +155,20 @@ parse_args(const int argc, char** argv, struct socks5args* args)
         }
         fprintf(stderr, "\n");
         exit(1);
+    }
+
+    // sin admins nadie puede autenticarse en el management, y ADD_USER solo
+    // crea usuarios comunes: el estado es irreversible hasta reiniciar con
+    // -a. El server arranca igual (el proxy solo es un uso valido), pero se
+    // avisa en el momento del error y no en una doc que nadie leyo.
+    bool has_admin = false;
+    for (int i = 0; i < args->nusers && !has_admin; i++)
+    {
+        has_admin = args->users[i].is_admin;
+    }
+    if (!has_admin)
+    {
+        fprintf(stderr, "warning: no admin users configured (-a <user>:<pass>); "
+                        "management commands will be unavailable\n");
     }
 }

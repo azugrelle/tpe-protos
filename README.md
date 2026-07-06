@@ -71,6 +71,20 @@ Los tests viven en `src/test/` y usan el framework [`check`](https://libcheck.gi
 
 ### Servidor Proxy:
 
+```sh
+bin/server -a admin:secreto -u alice:pass1
+```
+
+> **Importante:** incluir al menos un administrador (`-a <user>:<pass>`) al arrancar.
+> Los administradores son los únicos que pueden autenticarse en el servicio de
+> monitoreo, y **no pueden crearse en runtime** (`ADD_USER` crea usuarios comunes
+> del proxy): un servidor arrancado sin `-a` tiene el monitoreo inutilizable hasta
+> reiniciarlo. El servidor arranca igual (con un warning), porque usarlo solo como
+> proxy es válido.
+
+Opciones: `-p`/`-l` puerto y dirección del proxy SOCKS (default 1080), `-P`/`-L`
+puerto y dirección del monitoreo (default 8080), `-u` usuarios del proxy (hasta 10
+entre `-u` y `-a`), `-h` ayuda completa.
 
 ### Cliente de Monitoreo:
 
