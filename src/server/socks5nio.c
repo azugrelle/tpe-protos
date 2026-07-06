@@ -104,8 +104,14 @@ static struct socks5 *
 socks5_new(int client_fd) {
     struct socks5 *ret;
 
-    // tope de conexiones concurrentes (MAX_CONNECTIONS = 511: dos fds por
-    // conexión más los pasivos entran justo en el FD_SETSIZE de select).
+    // tope de conexiones concurrentes: cada una en COPY usa 2 fds (client +
+    // origin). El overhead fijo son 4 fds (stdout, stderr, pasivo SOCKS,
+    // pasivo mgmt); el close(0) de main.c recicla el fd de stdin para el
+    // primero de esos, así que el techo real bajo FD_SETSIZE de select() da
+    // ~510 conexiones simultáneas en COPY. MAX_CONNECTIONS=511 se pasa por 1
+    // de ese exacto, pero INVALID_FD en selector.c rechaza esa última con
+    // SELECTOR_MAXFD en vez de corromper el fd_set: peor caso es una conexión
+    // rechazada, no un crash.
     // Chequear acá y contabilizar recién al final del camino feliz es seguro
     // porque todo corre en el hilo del selector: no hay carrera entre ambos.
     if(metrics_get_current_connections() >= MAX_CONNECTIONS) {
