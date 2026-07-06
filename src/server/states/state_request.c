@@ -7,7 +7,6 @@
  * (state_connect.c), que es el dueño de la resolución + conexión al origen; solo
  * los errores de parseo/validación se responden acá.
  */
-#include <stdio.h>        // fprintf
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
 
 #include "netutils.h"     // transient_io_error
