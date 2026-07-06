@@ -72,6 +72,31 @@ salir solo") y cleanup. Sale `0` si ambos casos pasan, `1` si el drenado
 cortó la transferencia, aceptó conexiones nuevas, no salió solo o devolvió un
 exit code distinto de 0, `2` por dependencias o build.
 
+## `config_hot.sh`
+
+Valida que `CONFIG` afecte al proxy en caliente, sin reiniciar el proceso, con
+la matriz de aplicación distinta por parámetro:
+
+1. **`timeout`** (aplica a **todas** las conexiones vivas): `CONFIG timeout 3`
+   + una conexión muda al proxy → se cierra sola dentro de una ventana
+   generosa. Después, `CONFIG timeout 30` sobre el **mismo** proceso + una
+   conexión nueva → sobrevive más allá de lo que aguantaba con el valor
+   viejo, probando que el cambio se leyó sin reiniciar.
+2. **`buf_size`** (aplica solo a conexiones **nuevas**): a mitad de una
+   transferencia de 5MB en curso, `CONFIG buf_size 4096` → la transferencia
+   viva (con sus buffers originales) termina íntegra (`sha256sum`), y una
+   transferencia nueva iniciada después también llega íntegra con el tamaño
+   actualizado.
+
+```sh
+./src/test/integration/config_hot.sh
+```
+
+Mismas garantías que los demás: recompila server y cliente, puertos
+dinámicos, espera de listen y cleanup. Sale `0` si ambos casos pasan, `1` si
+una conexión no se cerró/sobrevivió como se esperaba o una transferencia
+llegó corrupta, `2` por dependencias o build.
+
 ## `monitor_session.sh`
 
 Valida el cliente de monitoreo contra el server real, punta a punta. Es el

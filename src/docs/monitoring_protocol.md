@@ -106,10 +106,15 @@ Si la lista está vacía:
 
 ### Parámetros válidos de `CONFIG`
 - `timeout`: entero positivo, en segundos, máximo 86400 (24h). Valor fuera de rango o no
-  numérico → `-ERR invalid value`. Aplica **solo a conexiones nuevas**.
+  numérico → `-ERR invalid value`. Aplica a **todas** las conexiones (nuevas y ya
+  activas): es un umbral de inactividad que se relee en cada barrido, no memoria que haya
+  que tocar. Un cambio se refleja dentro de ~1s (granularidad del barrido) sobre
+  cualquier conexión existente.
 - `buf_size`: entero positivo, en bytes, máximo 1048576 (1 MiB). Mismas reglas de
   validación. Aplica **solo a conexiones nuevas** (cambiar el tamaño de un buffer ya en
-  uso por una conexión activa no es trivial con la infraestructura provista).
+  uso por una conexión activa no es trivial con la infraestructura provista; se
+  recomienda no bajar de ~512 bytes por rendimiento, aunque no hay mínimo forzado más
+  allá de rechazar `0`).
 
 ### Límite de usuarios
 `MAX_USERS` está definido en `args.h` (10). `ADD_USER` sobre la tabla llena devuelve
