@@ -12,6 +12,7 @@
  * proxy sería ceremonia sin contenido.
  */
 #include <inttypes.h> // PRIu64
+#include <limits.h>   // INT_MAX
 #include <stdarg.h>   // va_list
 #include <stdbool.h>
 #include <stdint.h>
@@ -655,6 +656,16 @@ cmd_access_log(struct selector_key *key, unsigned state, char *args) {
         // no distingue): multilínea vacía, no un error
         mgmt_queue_line(s, "+OK");
         mgmt_queue_line(s, ".");
+        return state;
+    }
+
+    // techo defensivo antes de la aritmética: por encima de INT_MAX/600
+    // líneas se desbordarían tanto el (int) que espera el getter como la
+    // multiplicación del malloc. Con el ring de 512 visitas por usuario,
+    // llegar acá exigiría millones de usuarios distintos (el proceso muere
+    // de memoria mucho antes); si igual pasara, error de una línea.
+    if(total > (size_t)INT_MAX / ACCESS_LOG_LINE_LEN) {
+        mgmt_queue_line(s, "-ERR internal error");
         return state;
     }
 
