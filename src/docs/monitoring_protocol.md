@@ -73,6 +73,16 @@ Si la lista está vacía:
 .
 ```
 
+> **Invariante de framing:** el formato de la respuesta exitosa lo fija el **comando**,
+> no el contenido. `STATS`, `USERS`, `CONNECTIONS` y `ACCESS_LOG` responden éxito
+> **siempre** en formato multilínea — el `+OK` va solo en su línea (sin mensaje) y el
+> terminador `.` está siempre presente, aun con la lista vacía; nunca degeneran en un
+> `+OK <mensaje>` de una sola línea. Todos los demás comandos responden éxito siempre
+> en **una sola** línea. Junto con la regla de que los errores son siempre de una
+> línea, esto le permite a un cliente decidir el framing de la respuesta con solo
+> saber qué comando envió y mirar el primer token de la primera línea — sin
+> heurísticas sobre cuántos datos "parecen" venir.
+
 ## 5. Errores genéricos (aplican a cualquier comando)
 
 | Situación | Respuesta |
