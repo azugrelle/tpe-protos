@@ -41,6 +41,10 @@ struct client_args {
     /** credenciales de -a, o NULL si no vinieron por línea de comandos */
     const char *admin_user;
     const char *admin_pass;
+
+    /** argumentos posicionales: el comando one-shot; cmd_argc == 0 es REPL */
+    char      **cmd_argv;
+    int         cmd_argc;
 };
 
 static void
@@ -127,13 +131,11 @@ parse_client_args(const int argc, char **argv, struct client_args *args) {
             usage(argv[0], 2);
         }
     }
+    // lo posicional es un comando one-shot: se valida contra la tabla de
+    // comandos (antes de conectar), no acá
     if (optind < argc) {
-        fprintf(stderr, "argument not accepted: ");
-        while (optind < argc) {
-            fprintf(stderr, "%s ", argv[optind++]);
-        }
-        fprintf(stderr, "\n");
-        usage(argv[0], 2);
+        args->cmd_argv = argv + optind;
+        args->cmd_argc = argc - optind;
     }
 }
 
@@ -164,9 +166,12 @@ is_err(const char *line) {
  * valida el saludo inicial contra el contrato exacto del protocolo. Un mero
  * "+OK" aceptaría cualquier server de cualquier protocolo parecido; acá o es
  * nuestro server de monitoreo o no se mandan credenciales.
+ *
+ * `verbose' distingue la sesión interactiva (el saludo es feedback) del modo
+ * one-shot, donde stdout queda reservado para la respuesta del comando.
  */
 static bool
-check_greeting(struct monitor_conn *conn) {
+check_greeting(struct monitor_conn *conn, bool verbose) {
     const char *line = monitor_conn_recv_line(conn);
     if (line == NULL) {
         return false;
@@ -175,7 +180,9 @@ check_greeting(struct monitor_conn *conn) {
         fprintf(stderr, "protocol error: unexpected greeting\n");
         return false;
     }
-    print_response_line(line);
+    if (verbose) {
+        print_response_line(line);
+    }
     return true;
 }
 
@@ -227,9 +234,13 @@ prompt_line(const char *prompt, char *out, size_t size, bool hide) {
  * Con credenciales de -a hay un único intento (lo que un script necesita);
  * por prompt se reintenta ante el rechazo del server, pero un EOF de stdin
  * corta sin reintentar (un pipe agotado no debe loopear).
+ *
+ * Sin `verbose' (one-shot) el resultado del AUTH no pasa por stdout: el
+ * éxito es silencioso y el rechazo se reporta por stderr.
  */
 static bool
-login(struct monitor_conn *conn, const struct client_args *args) {
+login(struct monitor_conn *conn, const struct client_args *args,
+      bool verbose) {
     char user_buff[256], pass_buff[256];
     const char *user = args->admin_user;
     const char *pass = args->admin_pass;
@@ -267,7 +278,9 @@ login(struct monitor_conn *conn, const struct client_args *args) {
         if (resp == NULL) {
             return false;
         }
-        print_response_line(resp);
+        if (verbose) {
+            print_response_line(resp);
+        }
 
         if (is_ok(resp)) {
             return true;
@@ -275,6 +288,9 @@ login(struct monitor_conn *conn, const struct client_args *args) {
         if (!is_err(resp)) {
             fprintf(stderr, "protocol error: unexpected response\n");
             return false;
+        }
+        if (!verbose) {
+            fprintf(stderr, "%s\n", resp);   // el rechazo, al canal de errores
         }
         if (!interactive) {
             return false;
@@ -748,6 +764,46 @@ repl(struct monitor_conn *conn) {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Modo one-shot
+
+/**
+ * re-arma los argumentos posicionales con un espacio simple entre cada uno.
+ * El contenido de cada argumento se preserva (las comillas del shell ya
+ * hicieron su parte); el espaciado original entre ellos, no — el shell lo
+ * consumió antes de que llegara acá. false si no entra en `out'.
+ */
+static bool
+join_args(char **argv, int argc, char *out, size_t size) {
+    size_t used = 0;
+
+    for (int i = 0; i < argc; i++) {
+        const size_t len = strlen(argv[i]);
+        if (used + (i > 0 ? 1 : 0) + len + 1 > size) {
+            return false;
+        }
+        if (i > 0) {
+            out[used++] = ' ';
+        }
+        memcpy(out + used, argv[i], len);
+        used += len;
+    }
+    out[used] = '\0';
+    return true;
+}
+
+/**
+ * despedida del one-shot: cerrar sin QUIT sería descortés con el protocolo,
+ * pero su `+OK bye' no es parte de la respuesta pedida, así que no toca
+ * stdout ni cambia el exit code — la respuesta que importaba ya llegó.
+ */
+static void
+quit_farewell(struct monitor_conn *conn) {
+    if (monitor_conn_send_line(conn, "QUIT")) {
+        (void)monitor_conn_recv_line(conn);
+    }
+}
+
 int
 main(const int argc, char **argv) {
     struct client_args args;
@@ -757,14 +813,54 @@ main(const int argc, char **argv) {
     // EPIPE (que se maneja localmente), no matar el proceso
     signal(SIGPIPE, SIG_IGN);
 
+    const bool oneshot = args.cmd_argc > 0;
+
+    // la validación local del comando one-shot corre ANTES de conectar: un
+    // error de uso no toca la red y sale con 2, como los errores de CLI
+    const struct client_cmd *cmd = NULL;
+    char line[MONITOR_MAX_LINE];
+    if (oneshot) {
+        if (strcasecmp(args.cmd_argv[0], "help") == 0) {
+            print_help();
+            return 0;
+        }
+        cmd = find_command(args.cmd_argv[0]);
+        if (cmd == NULL) {
+            fprintf(stderr, "unknown command '%s', try 'help'\n",
+                    args.cmd_argv[0]);
+            return 2;
+        }
+        char rest[1024];
+        if (!join_args(args.cmd_argv + 1, args.cmd_argc - 1,
+                       rest, sizeof(rest))) {
+            fprintf(stderr, "line too long\n");
+            return 2;
+        }
+        if (!build_protocol_line(cmd, args.cmd_argc > 1 ? rest : NULL,
+                                 line)) {
+            return 2;
+        }
+    }
+
     struct monitor_conn conn;
     if (!monitor_conn_open(&conn, args.mng_addr, args.mng_port)) {
         return 1;
     }
 
     int ret = 1;
-    if (check_greeting(&conn) && login(&conn, &args)) {
-        ret = repl(&conn) ? 0 : 1;
+    if (check_greeting(&conn, !oneshot) && login(&conn, &args, !oneshot)) {
+        if (oneshot) {
+            bool server_ok;
+            if (run_command(&conn, cmd, line, &server_ok)) {
+                ret = server_ok ? 0 : 1;
+                if (strcmp(cmd->proto, "QUIT") != 0) {
+                    // si el comando pedido ya era quit, ese fue EL QUIT
+                    quit_farewell(&conn);
+                }
+            }
+        } else {
+            ret = repl(&conn) ? 0 : 1;
+        }
     }
 
     monitor_conn_close(&conn);
