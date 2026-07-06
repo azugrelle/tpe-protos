@@ -58,8 +58,8 @@ request_parser_feed(struct request_parser *p, const uint8_t b) {
             break;
 
         case request_rsv:
-            // RSV es reservado: se lee y se ignora su valor.
-            p->state = request_atyp;
+            // RFC 1928 §4 exige que el byte reservado sea 0x00.
+            p->state = (b == 0x00) ? request_atyp : request_error_invalid;
             break;
 
         case request_atyp:

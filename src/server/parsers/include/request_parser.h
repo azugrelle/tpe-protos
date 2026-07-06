@@ -73,7 +73,7 @@ enum request_state {
     request_version,
     /** esperando el comando (CMD); solo CONNECT es soportado */
     request_cmd,
-    /** esperando el byte reservado (RSV); se lee y se ignora */
+    /** esperando el byte reservado (RSV), que debe ser 0x00 */
     request_rsv,
     /** esperando el tipo de dirección (ATYP), que define cómo sigue DST.ADDR */
     request_atyp,
@@ -89,8 +89,8 @@ enum request_state {
     request_error_unsupported_version,
     request_error_unsupported_cmd,
     request_error_unsupported_atyp,
-    /** pedido malformado (FQDN vacío o con bytes fuera del charset de
-     *  hostname); reply REP general failure */
+    /** pedido malformado (RSV no nulo, FQDN vacío o con bytes fuera del
+     *  charset de hostname); reply REP general failure */
     request_error_invalid,
 };
 

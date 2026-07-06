@@ -93,6 +93,21 @@ START_TEST (test_request_unsupported_cmd) {
 }
 END_TEST
 
+START_TEST (test_request_nonzero_rsv) {
+    struct request_parser p;
+    request_parser_init(&p);
+    bool err = false;
+    uint8_t msg[] = {0x05,0x01,0x01,0x01, 0x7F,0x00,0x00,0x01, 0x00,0x50};
+    enum request_state st = feed_all(&p, msg, N(msg), &err);
+
+    ck_assert_int_eq(true, err);
+    ck_assert_int_eq(request_error_invalid, st);
+    // El parser debe detenerse en RSV, sin interpretar el resto del pedido.
+    ck_assert_uint_eq(0, p.atyp);
+    ck_assert_uint_eq(0, p.dst_addr_read);
+}
+END_TEST
+
 START_TEST (test_request_unsupported_atyp) {
     struct request_parser p;
     request_parser_init(&p);
@@ -367,6 +382,7 @@ suite(void) {
     tcase_add_test(tc, test_request_ipv6);
     tcase_add_test(tc, test_request_bad_version);
     tcase_add_test(tc, test_request_unsupported_cmd);
+    tcase_add_test(tc, test_request_nonzero_rsv);
     tcase_add_test(tc, test_request_unsupported_atyp);
     tcase_add_test(tc, test_request_fragmented);
     tcase_add_test(tc, test_request_empty_fqdn);
