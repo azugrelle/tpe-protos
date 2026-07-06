@@ -48,7 +48,8 @@ int create_user_credentials(const char *username, const char *password, bool is_
     }
     const static_entry * existing_user = hashmap_get(user_credentials, username);
     if (existing_user != NULL) {
-        printf("User %s already exists\n", username);
+        // diagnóstico: por stderr como el resto de los mensajes del server
+        fprintf(stderr, "User %s already exists\n", username);
         return 0;
     }
     return hashmap_insert(user_credentials, username, password, is_admin) != 0;

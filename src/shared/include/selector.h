@@ -39,8 +39,8 @@
  * El flujo de utilización de la librería es:
  *  - iniciar la libreria `selector_init'
  *  - crear un selector: `selector_new'
- *  - registrar un file descriptor: `selector_register_fd'
- *  - esperar algún evento: `selector_iteratate'
+ *  - registrar un file descriptor: `selector_register'
+ *  - esperar algún evento: `selector_select'
  *  - destruir los recursos de la librería `selector_close'
  */
 typedef struct fdselector * fd_selector;

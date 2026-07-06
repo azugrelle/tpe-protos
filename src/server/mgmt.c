@@ -1,5 +1,5 @@
 /**
- * mgmt.c -- servidor de monitoreo/administración del proxy SOCKSv5 (T32).
+ * mgmt.c -- servidor de monitoreo/administración del proxy SOCKSv5.
  *
  * Sigue el mismo patrón que socks5nio.c: este archivo es dueño del ciclo de
  * vida de la sesión (`struct mgmt_session', pool de reuso), de la tabla de
@@ -38,6 +38,13 @@
 #define MGMT_MAX_LINE          512
 /** tamaño del buffer crudo de lectura de la sesión */
 #define MGMT_READ_BUFFER_SIZE  1024
+/**
+ * intentos de AUTH fallidos tolerados por sesión antes de cerrar la conexión:
+ * sin freno, el canal (texto plano, sin cifrar) permite fuerza bruta de las
+ * credenciales de admin al ritmo que el atacante quiera. Reconectar renueva
+ * el cupo, pero obliga a pagar un handshake TCP por cada tanda.
+ */
+#define MGMT_MAX_AUTH_FAILURES 3
 /**
  * espacio que exigimos libre en el write buffer ANTES de despachar una línea:
  * garantiza que la respuesta entra siempre ENTERA, incluidas las multilínea.
@@ -120,6 +127,9 @@ struct mgmt_session {
      * entero aunque el send() sea parcial, y corta el consumo de más líneas.
      */
     bool                     closing;
+
+    /** AUTH fallidos en esta sesión (ver MGMT_MAX_AUTH_FAILURES) */
+    unsigned                 auth_failures;
 
     /**
      * emisión resumible de ACCESS_LOG: la respuesta completa se materializa
@@ -240,7 +250,11 @@ mgmt_queue_line(struct mgmt_session *s, const char *msg) {
 
     if(space < len + 1) {
         // no debería ocurrir: mgmt_can_respond() reserva lugar antes de cada
-        // despacho. Si igual pasa, cerrar es mejor que responder a medias.
+        // despacho. Si igual pasa, cerrar es mejor que responder a medias --
+        // y dejar rastro, porque desde afuera sería indistinguible de un
+        // cliente que simplemente se desconectó.
+        fprintf(stderr, "mgmt: write buffer overflow (respuesta descartada), "
+                        "se cierra la sesión\n");
         s->closing = true;
         return;
     }
@@ -390,6 +404,14 @@ cmd_auth(struct selector_key *key, unsigned state, char *args) {
     if(check_if_valid_admin_credentials(args, pass) == 0x00) {
         mgmt_queue_line(s, "+OK authenticated");
         return MGMT_AUTH;
+    }
+    // freno a la fuerza bruta: al agotar los intentos se corta la sesión
+    // (closing drena el error antes de cerrar, igual que el bye de QUIT)
+    s->auth_failures++;
+    if(s->auth_failures >= MGMT_MAX_AUTH_FAILURES) {
+        mgmt_queue_line(s, "-ERR too many failed logins");
+        s->closing = true;
+        return state;
     }
     mgmt_queue_line(s, "-ERR invalid credentials");
     return state;
@@ -653,7 +675,7 @@ cmd_access_log(struct selector_key *key, unsigned state, char *args) {
     return state;
 }
 
-/** ADD_USER <user> <pass> -- alta de usuario en runtime (T70) */
+/** ADD_USER <user> <pass> -- alta de usuario del proxy en runtime */
 static unsigned
 cmd_add_user(struct selector_key *key, unsigned state, char *args) {
     struct mgmt_session *s = MGMT_ATTACHMENT(key);
@@ -685,7 +707,7 @@ cmd_add_user(struct selector_key *key, unsigned state, char *args) {
     return state;
 }
 
-/** DEL_USER <user> -- baja de usuario en runtime (T70) */
+/** DEL_USER <user> -- baja de usuario del proxy en runtime */
 static unsigned
 cmd_del_user(struct selector_key *key, unsigned state, char *args) {
     struct mgmt_session *s = MGMT_ATTACHMENT(key);

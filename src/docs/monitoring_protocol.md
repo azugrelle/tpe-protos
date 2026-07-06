@@ -46,6 +46,12 @@ Si el cliente envía `AUTH` estando ya autenticado, el servidor responde
 `-ERR already authenticated` (no se permite reautenticar ni cambiar de usuario a mitad
 de sesión).
 
+**Límite de intentos:** al tercer `AUTH` con credenciales inválidas en la misma sesión
+el servidor responde `-ERR too many failed logins` y cierra la conexión (freno a la
+fuerza bruta sobre un canal en texto plano; reconectar renueva el cupo, al costo de un
+handshake TCP por tanda). Los errores de sintaxis (`-ERR invalid arguments`) no
+consumen intentos.
+
 > ⚠️ **Limitación conocida:** las credenciales viajan en texto plano. No se cifra el
 > canal. Se documenta como simplificación aceptada para el alcance del TPE.
 
@@ -188,5 +194,5 @@ S: +OK bye
   `selector.c`, con su propia máquina de estados (independiente de la STM de SOCKS5),
   usando la misma infraestructura de `buffer.c`/`stm.c`/`parser.c` provista por la
   cátedra.
-- Este documento es el insumo directo de T32 (implementación del handler) y de T100
+- Este documento es el insumo directo de la implementación del handler de monitoreo y del RFC
   (formalización como RFC).

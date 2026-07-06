@@ -11,13 +11,13 @@
  *             seguimiento de usuarios activos e históricos.
  *
  * El módulo SOLO cuenta: no sabe de sockets ni de SOCKS5. Los que llaman
- * actualizan los contadores en el momento correcto; el monitoreo (T42) lee.
+ * actualizan los contadores en el momento correcto; el monitoreo lee.
  *
  * Concurrencia: TODO el camino caliente corre en el hilo único del selector,
- * por lo que NO se usan locks. El hilo de DNS (T50) NO debe llamar a estas
+ * por lo que NO se usan locks. El hilo de resolución de DNS NO debe llamar a estas
  * funciones.
  *
- * API congelada: consumida por T42 (STATS/CONNECTIONS) y T71 (ACCESS_LOG).
+ * API estable: la consumen los comandos STATS/USERS/CONNECTIONS y ACCESS_LOG del monitoreo.
  *
  * NOTA de adaptación: la referencia asumía MAX_USERNAME_LEN en args.h; en este
  * proyecto no existe y args.h vive en src/server/ (metrics está en src/shared/,
@@ -102,7 +102,7 @@ void metrics_add_user_site(const char *username, char *site, char *port, bool su
 /** Libera toda la memoria dinámica del módulo. */
 void metrics_free(void);
 
-/* ---- Getters para los comandos de monitoreo (T42) ---- */
+/* ---- Getters para los comandos de monitoreo ---- */
 
 uint64_t metrics_get_total_connections(void);
 uint64_t metrics_get_current_connections(void);

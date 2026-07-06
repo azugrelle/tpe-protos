@@ -2,7 +2,7 @@
 #define MGMT_H_qX2vB8nT4kW9cR1zL6pM3sH7dJ0fG5aY
 
 /**
- * mgmt.h -- servidor de monitoreo/administración del proxy SOCKSv5 (T32).
+ * mgmt.h -- servidor de monitoreo/administración del proxy SOCKSv5.
  *
  * Protocolo de texto orientado a línea (ver doc/monitoring_protocol.md),
  * servido en un socket pasivo propio (-L/-P) registrado en el mismo selector

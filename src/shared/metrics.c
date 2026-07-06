@@ -5,7 +5,7 @@
 
 /*
  * Estado global de métricas. Único, sin locks: todo el camino caliente corre en
- * el hilo del selector (ver metrics.h). El hilo de DNS (T50) no debe tocarlo.
+ * el hilo del selector (ver metrics.h). El hilo de resolución de DNS no debe tocarlo.
  */
 
 static uint64_t total_connections = 0;

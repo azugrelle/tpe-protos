@@ -12,7 +12,7 @@
  * (ver args.h / -u, -a usuario:contraseña) y es consumida por el flujo de
  * autenticación SOCKS5 (check_if_valid_credentials) y por el login del
  * monitoreo (check_if_valid_admin_credentials). También es la tabla que
- * modifican en runtime los comandos ADD_USER/DEL_USER (T70).
+ * modifican en runtime los comandos ADD_USER/DEL_USER del monitoreo.
  */
 
 /**

@@ -5,7 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ENTRY_LENGTH 255
+// 255 caracteres útiles + NUL: el protocolo de monitoreo y RFC 1929 admiten
+// usernames/passwords de hasta 255 bytes, y el -1 del NUL lo descuenta
+// MAX_CREDENTIAL_LEN (user_auth_utils.c)
+#define ENTRY_LENGTH 256
 
 typedef struct static_entry {
     char key[ENTRY_LENGTH];     // name
