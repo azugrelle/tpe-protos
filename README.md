@@ -1,11 +1,25 @@
 # TPE - Protocolos de Comunicación
 
+Servidor **proxy SOCKSv5** (RFC 1928) no bloqueante y single-thread, con
+autenticación usuario/contraseña (RFC 1929) y administración en caliente:
+
+- **Servidor SOCKSv5**: salida TCP a destinos IPv4, IPv6 y FQDN, con resolución
+  DNS asíncrona y reintento sobre todas las direcciones del destino.
+- **Protocolo de monitoreo**: protocolo de texto propio, en un puerto aparte,
+  para consultar métricas, gestionar usuarios y cambiar la configuración en
+  runtime sin reiniciar ([especificación](src/docs/monitoring_protocol.md)).
+- **Cliente de monitoreo**: aplicación de terminal, interactiva o por comando
+  único, para operar el servidor.
+- **Métricas y registro de accesos**: conexiones históricas y concurrentes,
+  bytes transferidos, usuarios activos y access log por usuario.
+
 <details>
   <summary>Contenidos</summary>
   <ol>
     <li><a href="#instalación">Instalación</a></li>
     <li><a href="#instrucciones">Instrucciones</a></li>
     <li><a href="#limpieza">Limpieza</a></li>
+    <li><a href="#estructura">Estructura</a></li>
     <li><a href="#integrantes">Integrantes</a></li>
   </ol>
 </details>
@@ -84,7 +98,17 @@ bin/server -a admin:secreto -u alice:pass1
 
 Opciones: `-p`/`-l` puerto y dirección del proxy SOCKS (default 1080), `-P`/`-L`
 puerto y dirección del monitoreo (default 8080), `-u` usuarios del proxy (hasta 10
-entre `-u` y `-a`), `-h` ayuda completa.
+entre `-u` y `-a`), `-h` ayuda completa, `-v` versión.
+
+Con el servidor corriendo, cualquier cliente SOCKS5 puede salir a través del
+proxy autenticándose con un usuario cargado. Por ejemplo, con `curl`:
+
+```sh
+curl --socks5-hostname alice:pass1@127.0.0.1:1080 http://example.com
+```
+
+(`--socks5-hostname` delega la resolución DNS en el proxy, que es el caso de uso
+típico; con `--socks5` curl resuelve localmente y envía la IP.)
 
 ### Cliente de Monitoreo:
 
@@ -161,6 +185,30 @@ make clean
 Las pruebas end-to-end se documentan en
 [`src/test/integration/README.md`](src/test/integration/README.md). La sesión de
 monitoreo completa puede ejecutarse con `make integration-test`.
+
+<p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
+
+## Estructura:
+
+Materiales del repositorio:
+
+| Ubicación | Contenido |
+|---|---|
+| `src/server/` | Servidor: proxy SOCKSv5 (`socks5nio.c`, `states/`, `parsers/`) y monitoreo (`mgmt.c`) |
+| `src/client/` | Cliente de monitoreo |
+| `src/shared/` | Infraestructura común: selector, buffers, máquina de estados, métricas, config |
+| `src/test/` | Tests unitarios (`check`) y de integración (`integration/`), más suite de valgrind (`valgrind/`) |
+| `src/docs/` | [Especificación del protocolo de monitoreo](src/docs/monitoring_protocol.md) |
+| `Makefile` / `Makefile.inc` | Build (targets `all`, `server`, `client`, `test`, `integration-test`, `clean`) |
+
+Artefactos generados por `make` (no se versionan):
+
+| Artefacto | Qué es |
+|---|---|
+| `bin/server` | Servidor proxy SOCKSv5 + servicio de monitoreo |
+| `bin/client` | Cliente de monitoreo |
+| `bin/test/*` | Binarios de los tests unitarios |
+| `obj/` | Objetos intermedios de compilación |
 
 <p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
 
