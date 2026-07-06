@@ -39,8 +39,6 @@ request_rep(struct socks5 *s) {
                 // no debería pasar: el parser ya validó el ATYP.
                 return SOCKS5_REP_ATYP_NOT_SUPPORTED;
             }
-            fprintf(stderr, "request: CONNECT atyp=%u %s:%u\n",
-                    (unsigned)s->dest_atyp, s->dest_host, (unsigned)s->dest_port);
             // destino válido: connect_start resuelve y conecta al origen.
             return SOCKS5_REP_SUCCEEDED;
 

@@ -129,9 +129,15 @@ copy_r(struct selector_key *key) {
 
     ptr = buffer_write_ptr(d->rb, &count);
     if(count == 0) {
-        // evento espurio con el buffer destino lleno: recv de 0 bytes
-        // devolvería 0 y se confundiría con EOF. Recomputar y seguir.
-        return copy_refresh_interests(key, d) ? COPY : ERROR;
+        // buffer lleno pero con lectura ya consumida al frente: compactar
+        // recupera espacio sin esperar a que se vacíe del todo.
+        buffer_compact(d->rb);
+        ptr = buffer_write_ptr(d->rb, &count);
+        if(count == 0) {
+            // evento espurio con el buffer destino lleno: recv de 0 bytes
+            // devolvería 0 y se confundiría con EOF. Recomputar y seguir.
+            return copy_refresh_interests(key, d) ? COPY : ERROR;
+        }
     }
 
     n = recv(key->fd, ptr, count, 0);
