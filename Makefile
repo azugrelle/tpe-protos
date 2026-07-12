@@ -28,7 +28,10 @@ $(CLIENT_OUTPUT_FILE): $(CLIENT_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
 	$(COMPILER) $(COMPILER_FLAGS) $(LD_FLAGS) $(CLIENT_OBJECTS) $(SHARED_OBJECTS) -o $(CLIENT_OUTPUT_FILE)
 
-obj/%.o: src/%.c
+# Los objetos dependen de Makefile.inc: los .d de -MMD -MP solo trackean headers,
+# asi que sin esto un cambio de COMPILER_FLAGS no invalida lo ya compilado y un
+# build incremental linkea una mezcla silenciosa de objetos con flags distintos.
+obj/%.o: src/%.c Makefile.inc
 	mkdir -p $(dir $@)
 	$(COMPILER) $(COMPILER_FLAGS) -c $< -o $@
 
@@ -49,6 +52,9 @@ TESTS=$(TEST_FOLDER)/buffer_test \
       $(TEST_FOLDER)/state_request_test \
       $(TEST_FOLDER)/metrics_test \
       $(TEST_FOLDER)/hashmap_user_auth_test
+
+# los tests compilan directo desde las fuentes: mismo motivo que obj/%.o
+$(TESTS): Makefile.inc
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; $$t || exit 1; done
