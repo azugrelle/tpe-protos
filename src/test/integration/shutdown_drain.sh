@@ -18,6 +18,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib.sh"
 SIZE_MB=5
 RATE=1M            # ~5s de transferencia: ventana comoda para senalar
 XFER_TIMEOUT=60
@@ -39,10 +40,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-free_port() {
-    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
-print(s.getsockname()[1]); s.close()'
-}
 HTTP_PORT="$(free_port)"
 
 dd if=/dev/urandom of="$TMP/big.bin" bs=1M count="$SIZE_MB" status=none
@@ -51,24 +48,6 @@ want="$(sha256sum "$TMP/big.bin" | cut -d' ' -f1)"
 python3 -m http.server "$HTTP_PORT" --directory "$TMP" >/dev/null 2>&1 &
 HTTP_PID=$!
 
-wait_listen() {
-    local pid=$1 port=$2 name=$3
-    for _ in $(seq 1 50); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "$name no arranco" >&2
-            return 1
-        fi
-        if python3 -c "import socket,sys
-s = socket.socket(); s.settimeout(0.2)
-try: s.connect((\"127.0.0.1\", $port))
-except OSError: sys.exit(1)"; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "$name no escucha en el puerto $port" >&2
-    return 1
-}
 wait_listen "$HTTP_PID" "$HTTP_PORT" "http.server" || exit 2
 
 # cada caso levanta su propio proxy (el caso anterior lo apaga)

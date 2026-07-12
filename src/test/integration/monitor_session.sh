@@ -24,6 +24,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib.sh"
 
 ADMIN_USER=admin
 ADMIN_PASS=secret
@@ -50,10 +51,6 @@ cleanup() {
 trap cleanup EXIT
 
 # puertos dinamicos (los elige el kernel) para no colisionar entre corridas
-free_port() {
-    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
-print(s.getsockname()[1]); s.close()'
-}
 PROXY_PORT="$(free_port)"
 MNG_PORT="$(free_port)"
 
@@ -63,24 +60,6 @@ MNG_PORT="$(free_port)"
 SERVER_PID=$!
 
 # esperar a que el server escuche de verdad (y detectar si murio al nacer)
-wait_listen() {
-    local pid=$1 port=$2 name=$3
-    for _ in $(seq 1 50); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "$name no arranco" >&2
-            return 1
-        fi
-        if python3 -c "import socket,sys
-s = socket.socket(); s.settimeout(0.2)
-try: s.connect((\"127.0.0.1\", $port))
-except OSError: sys.exit(1)"; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "$name no escucha en el puerto $port" >&2
-    return 1
-}
 wait_listen "$SERVER_PID" "$MNG_PORT" "monitoreo" || exit 2
 
 # corre el cliente en one-shot y deja stdout en OUT, stderr en $TMP/err, y el

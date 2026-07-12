@@ -21,10 +21,16 @@
 #
 set -u
 
-PORT=11093
-MGMT_PORT=11094
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
+# helpers y entorno compartidos de los tests (PYTHONDONTWRITEBYTECODE)
+. "$HERE/../lib.sh"
+# puertos dinamicos que elige el kernel. Antes: el de SOCKS era fijo (leak_multiip
+# y leak_shutdown compartian el 11093) y el de monitoreo ni se pasaba, asi que el
+# server usaba su default 8080 -> con algo escuchando en 8080 (o con otra corrida
+# en curso) el bind fallaba y el server salia con "el server no arranco".
+PORT="$(free_port)"
+MGMT_PORT="$(free_port)"
 DRIVER="$HERE/driver_shutdown.py"
 SHIM="$(mktemp --suffix=.so)"
 DRV_OUT="$(mktemp)"
@@ -117,8 +123,11 @@ start_server() {
              --log-file="$LOG" \
              "$REPO/bin/server" -p "$PORT" -P "$MGMT_PORT" >/dev/null 2>&1 &
     VG=$!
-    sleep 5                    # valgrind arranca lento
-    kill -0 "$VG" 2>/dev/null || { echo "el server no arranco" >&2; exit 2; }
+    # esperar a que el server ESCUCHE, no solo a que el proceso viva: kill -0
+    # daba OK aunque el bind hubiera fallado, y el error recien aparecia despues,
+    # como un fallo del driver. El presupuesto es amplio porque bajo valgrind (y con
+    # varias corridas en paralelo) el arranque es lento; igual sale apenas escucha.
+    wait_listen "$VG" "$PORT" "el server bajo valgrind" 150 || exit 2
 }
 
 # ---- caso 1: drenado (1 señal, el server sale solo) -------------------------

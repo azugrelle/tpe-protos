@@ -509,6 +509,9 @@ print_response_raw(const struct response *resp) {
 /** ancho de la columna de claves (la más larga hoy ocupa 23 con su ':') */
 #define KEY_COLUMN 24
 
+/** peor caso de decorate_value(): 47 human + " (" + 20 uint64 + ")" + NUL */
+#define PRETTY_VALUE_MAX 96
+
 static void
 format_duration(unsigned long long secs, char *out, size_t size) {
     const unsigned long long d = secs / 86400;
@@ -595,7 +598,7 @@ format_key_values(const struct response *resp) {
         }
         snprintf(key, sizeof(key), "%.*s:", (int)keylen, line);
 
-        char pretty[64];
+        char pretty[PRETTY_VALUE_MAX];
         printf("%-*s %s\n", KEY_COLUMN, key,
                decorate_value(line, keylen, value, pretty, sizeof(pretty)));
     }

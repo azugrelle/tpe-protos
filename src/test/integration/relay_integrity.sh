@@ -17,6 +17,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib.sh"
 SIZE_MB=5
 XFER_TIMEOUT=60
 
@@ -38,10 +39,6 @@ cleanup() {
 trap cleanup EXIT
 
 # puertos dinamicos (los elige el kernel) para no colisionar entre corridas
-free_port() {
-    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
-print(s.getsockname()[1]); s.close()'
-}
 PROXY_PORT="$(free_port)"
 HTTP_PORT="$(free_port)"
 
@@ -53,24 +50,6 @@ HTTP_PID=$!
 PROXY_PID=$!
 
 # esperar a que cada proceso escuche de verdad (y detectar si murio al nacer)
-wait_listen() {
-    local pid=$1 port=$2 name=$3
-    for _ in $(seq 1 50); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "$name no arranco" >&2
-            return 1
-        fi
-        if python3 -c "import socket,sys
-s = socket.socket(); s.settimeout(0.2)
-try: s.connect((\"127.0.0.1\", $port))
-except OSError: sys.exit(1)"; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "$name no escucha en el puerto $port" >&2
-    return 1
-}
 wait_listen "$HTTP_PID"  "$HTTP_PORT"  "http.server" || exit 2
 wait_listen "$PROXY_PID" "$PROXY_PORT" "proxy"       || exit 2
 

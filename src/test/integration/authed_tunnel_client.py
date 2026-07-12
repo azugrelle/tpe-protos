@@ -16,19 +16,15 @@ Sale 0 si la negociación y el eco anduvieron, 1 ante cualquier error.
 import socket
 import struct
 import sys
+import os
+
+# helpers SOCKS5 compartidos (src/test/socks5.py): recv_exact y el parseo
+# del REPLY vivian duplicados en cada cliente
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from socks5 import recv_exact, read_reply  # noqa: E402
 
 PROXY_HOST = "127.0.0.1"
 PAYLOAD = b"eco-a-traves-del-proxy\n"
-
-
-def recv_exact(sock, n):
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            raise OSError(f"EOF esperando {n} bytes (llegaron {len(data)})")
-        data += chunk
-    return data
 
 
 def die(msg):
@@ -66,17 +62,9 @@ try:
     # REQUEST: CONNECT con ATYP IPv4 (destino local, sin pasar por DNS)
     c.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(dest_ip)
               + struct.pack("!H", dest_port))
-    ver, rep, _, atyp = recv_exact(c, 4)
+    ver, rep, _atyp = read_reply(c)
     if ver != 0x05 or rep != 0x00:
         die(f"REPLY con VER={ver:#04x} REP={rep:#04x}, esperaba éxito")
-    if atyp == 0x01:
-        recv_exact(c, 4 + 2)
-    elif atyp == 0x04:
-        recv_exact(c, 16 + 2)
-    elif atyp == 0x03:
-        recv_exact(c, recv_exact(c, 1)[0] + 2)
-    else:
-        die(f"ATYP desconocido en el reply: {atyp}")
 
     # eco de ida y vuelta: garantiza bytes relayados por el proxy
     c.sendall(PAYLOAD)

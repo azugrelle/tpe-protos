@@ -28,6 +28,12 @@ import socket
 import struct
 import sys
 import time
+import os
+
+# helpers SOCKS5 compartidos (src/test/socks5.py): recv_exact y el parseo
+# del REPLY vivian duplicados en cada cliente
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from socks5 import recv_exact, read_reply  # noqa: E402
 
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = int(sys.argv[1])
@@ -35,16 +41,6 @@ MGMT_PORT  = int(sys.argv[2])
 MODE       = sys.argv[3]
 N          = int(sys.argv[4]) if len(sys.argv) > 4 else 6
 HOLD_DRAIN = 6   # cuanto sostener las COPY en modo drain antes de soltar
-
-
-def recv_exact(sock, n):
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            raise OSError("EOF prematuro")
-        data += chunk
-    return data
 
 
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -66,8 +62,8 @@ for _ in range(N):
             raise OSError("hello rechazado")
         c.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1")
                   + struct.pack("!H", origin_port))
-        rep = recv_exact(c, 10)
-        if rep[1] != 0x00:
+        _ver, rep, _atyp = read_reply(c)
+        if rep != 0x00:
             raise OSError(f"REP={rep[1]:#04x}")
         o, _ = srv.accept()
         o.settimeout(15)

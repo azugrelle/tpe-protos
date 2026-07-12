@@ -15,18 +15,14 @@ completa (Content-Length coincide), 1 ante cualquier problema.
 import socket
 import struct
 import sys
+import os
+
+# helpers SOCKS5 compartidos (src/test/socks5.py): recv_exact y el parseo
+# del REPLY vivian duplicados en cada cliente
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from socks5 import recv_exact, read_reply  # noqa: E402
 
 PROXY_HOST = "127.0.0.1"
-
-
-def recv_exact(sock, n):
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            raise OSError(f"EOF esperando {n} bytes (llegaron {len(data)})")
-        data += chunk
-    return data
 
 
 def die(msg):
@@ -60,18 +56,10 @@ host = dest_host.encode()
 c.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host
           + struct.pack("!H", dest_port))
 
-# REPLY: VER REP RSV ATYP BND.ADDR BND.PORT (largo variable segun ATYP)
-ver, rep, _, atyp = recv_exact(c, 4)
+# REPLY (read_reply consume BND.ADDR + BND.PORT segun el ATYP)
+_ver, rep, _atyp = read_reply(c)
 if rep != 0x00:
     die(f"CONNECT rechazado: REP={rep:#04x}")
-if atyp == 0x01:
-    recv_exact(c, 4 + 2)
-elif atyp == 0x04:
-    recv_exact(c, 16 + 2)
-elif atyp == 0x03:
-    recv_exact(c, recv_exact(c, 1)[0] + 2)
-else:
-    die(f"ATYP desconocido en el reply: {atyp}")
 
 # pedido + half-close: no mandamos nada mas, pero seguimos leyendo
 c.sendall(f"GET {path} HTTP/1.0\r\n\r\n".encode())

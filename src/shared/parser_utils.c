@@ -18,6 +18,11 @@ parser_utils_strcmpi_event(const enum string_cmp_event_types type) {
         case STRING_CMP_NEQ:
             ret = "neq(c)";
             break;
+        default:
+            // un `type' casteado fuera del enum devolvia un puntero
+            // indeterminado, que el caller mandaria a un %s
+            ret = "unknown(c)";
+            break;
     }
     return ret;
 }

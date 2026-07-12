@@ -20,6 +20,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib.sh"
 
 ADMIN_USER=admin
 ADMIN_PASS=secret
@@ -42,30 +43,6 @@ cleanup() {
     rm -rf "$TMP"
 }
 trap cleanup EXIT
-
-free_port() {
-    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
-print(s.getsockname()[1]); s.close()'
-}
-
-wait_listen() {
-    local pid=$1 port=$2 name=$3
-    for _ in $(seq 1 50); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "$name no arranco" >&2
-            return 1
-        fi
-        if python3 -c "import socket,sys
-s = socket.socket(); s.settimeout(0.2)
-try: s.connect((\"127.0.0.1\", $port))
-except OSError: sys.exit(1)"; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "$name no escucha en el puerto $port" >&2
-    return 1
-}
 
 # corre el cliente de monitoreo en one-shot; deja stdout en OUT y el exit
 # code en RC (patron de monitor_session.sh)
