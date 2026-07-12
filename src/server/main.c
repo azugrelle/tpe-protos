@@ -103,7 +103,8 @@ main(const int argc, char **argv) {
     const char       *err_msg = NULL;
     selector_status   ss      = SELECTOR_SUCCESS;
     fd_selector selector      = NULL;
-    // declarado (e inicializado) antes del primer goto finally, que lo cruza
+    // declarados (e inicializados) antes del primer goto finally, que los cruza
+    int server                = -1;
     int mng_server            = -1;
 
     struct sockaddr_storage socks_ss;
@@ -116,7 +117,7 @@ main(const int argc, char **argv) {
     }
 
     // no-const: el drenado lo cierra y lo blanquea a -1 antes del finally
-    int server = socket(socks_family, SOCK_STREAM, IPPROTO_TCP);
+    server = socket(socks_family, SOCK_STREAM, IPPROTO_TCP);
     if(server < 0) {
         err_msg = "unable to create socket";
         goto finally;
