@@ -319,7 +319,8 @@ main(const int argc, char **argv) {
             goto finally;
         }
         // barrido de inactividad: cierra conexiones sin actividad hace más
-        // del timeout de la config. Corre también durante el drenado (cerrar
+        // del timeout de la config, y sesiones de monitoreo ociosas (con su
+        // propio umbral, ver mgmt.c). Corre también durante el drenado (cerrar
         // ociosas solo ayuda a que el drenado termine antes), pero a lo sumo
         // una vez cada `sweep_interval': así el costo pasa de O(conexiones
         // vivas) por evento a O(conexiones vivas) por intervalo.
@@ -331,6 +332,7 @@ main(const int argc, char **argv) {
         if(now.tv_sec - last_sweep >= sweep_interval) {
             last_sweep = now.tv_sec;
             socksv5_sweep_timeouts(selector);
+            mgmt_sweep_timeouts(selector);
         }
     }
     // salida por señal: apagado pedido, no un error (exit 0)

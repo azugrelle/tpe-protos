@@ -19,6 +19,7 @@
 #include <stdio.h>    // vsnprintf
 #include <stdlib.h>   // malloc
 #include <string.h>   // memset, strchr, strcmp
+#include <time.h>     // clock_gettime
 #include <unistd.h>   // close
 
 #include <sys/socket.h>   // recv, send, MSG_NOSIGNAL
@@ -46,6 +47,32 @@
  * el cupo, pero obliga a pagar un handshake TCP por cada tanda.
  */
 #define MGMT_MAX_AUTH_FAILURES 3
+/**
+ * tope de sesiones de monitoreo concurrentes. Sin tope no hay nada que frene a
+ * un cliente que abre conexiones y no manda un solo byte: cada una se queda con
+ * un fd para siempre. Y como el monitoreo vive en el MISMO selector que el
+ * proxy, comparte con él el presupuesto de fds acotado por FD_SETSIZE, así que
+ * agotarlo no solo voltea al monitoreo -- deja a socksv5_passive_accept sin
+ * poder registrar clientes nuevos. El monitoreo es un canal de administración
+ * (un puñado de sesiones alcanza) y el resto del presupuesto es del proxy, que
+ * es quien da el servicio.
+ */
+#define MGMT_MAX_SESSIONS      16
+/**
+ * timeout de inactividad, en segundos, de una sesión que TODAVÍA NO autenticó.
+ * Es el vector barato del ataque -- abrir sesiones no exige credencial -- así
+ * que se corta agresivo: ningún cliente legítimo necesita medio minuto para
+ * mandar su AUTH.
+ */
+#define MGMT_NOAUTH_TIMEOUT    30
+/**
+ * timeout de inactividad, en segundos, de una sesión ya autenticada. Es a
+ * propósito que NO sea el `timeout' de config: ese es el contrato del proxy y
+ * el admin puede bajarlo en caliente, con lo que un `CONFIG timeout 1' le
+ * cerraría de rebote su propia sesión de monitoreo. Generoso, porque del otro
+ * lado suele haber una persona tipeando en una terminal.
+ */
+#define MGMT_IDLE_TIMEOUT      600
 /**
  * espacio que exigimos libre en el write buffer ANTES de despachar una línea:
  * garantiza que la respuesta entra siempre ENTERA, incluidas las multilínea.
@@ -133,6 +160,13 @@ struct mgmt_session {
     unsigned                 auth_failures;
 
     /**
+     * momento (reloj monótono, en segundos) del último evento de I/O de la
+     * sesión. Lo consulta el barrido de inactividad; lo refrescan los handlers
+     * top-level, igual que en el proxy.
+     */
+    time_t                   last_activity;
+
+    /**
      * emisión resumible de ACCESS_LOG: la respuesta completa se materializa
      * en `log_lines' (una FOTO del historial tomada al despachar el comando,
      * en heap porque no está acotada) y se vuelca al write buffer al ritmo
@@ -153,6 +187,9 @@ struct mgmt_session {
 
     /** siguiente en el pool de reuso */
     struct mgmt_session     *next;
+
+    /** enlaces en la lista de sesiones vivas (ver live_head) */
+    struct mgmt_session     *live_next, *live_prev;
 };
 
 /** obtiene el struct (mgmt_session *) desde la llave de selección */
@@ -165,6 +202,52 @@ struct mgmt_session {
 static const unsigned        max_pool  = 10;
 static unsigned              pool_size = 0;
 static struct mgmt_session  *pool      = NULL;
+
+/**
+ * lista de sesiones vivas (alta en `mgmt_new', baja en `mgmt_session_destroy').
+ * La recorre el barrido de inactividad, y su contador es el que acota
+ * MGMT_MAX_SESSIONS. El proxy lleva la suya propia en socks5nio.c: son dos
+ * poblaciones distintas, con topes y timeouts distintos.
+ */
+static struct mgmt_session  *live_head  = NULL;
+static unsigned              live_count = 0;
+
+static void
+mgmt_live_link(struct mgmt_session *s) {
+    s->live_prev = NULL;
+    s->live_next = live_head;
+    if(live_head != NULL) {
+        live_head->live_prev = s;
+    }
+    live_head  = s;
+    live_count++;
+}
+
+static void
+mgmt_live_unlink(struct mgmt_session *s) {
+    if(s->live_prev != NULL) {
+        s->live_prev->live_next = s->live_next;
+    } else {
+        live_head = s->live_next;
+    }
+    if(s->live_next != NULL) {
+        s->live_next->live_prev = s->live_prev;
+    }
+    s->live_next = s->live_prev = NULL;
+    live_count--;
+}
+
+/**
+ * marca ahora como última actividad de la sesión. Único punto de refresco: lo
+ * llaman `mgmt_new' y los handlers top-level, así el resto del archivo ni se
+ * entera de que el timeout de inactividad existe.
+ */
+static void
+mgmt_touch(struct mgmt_session *s) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    s->last_activity = now.tv_sec;
+}
 
 static const struct state_definition *
 mgmt_describe_states(void);
@@ -197,6 +280,9 @@ mgmt_new(int client_fd) {
 
     buffer_init(&ret->read_buffer,  N(ret->raw_buff_read),  ret->raw_buff_read);
     buffer_init(&ret->write_buffer, N(ret->raw_buff_write), ret->raw_buff_write);
+
+    mgmt_touch(ret);
+    mgmt_live_link(ret);
 finally:
     return ret;
 }
@@ -212,6 +298,9 @@ mgmt_session_destroy(struct mgmt_session *s) {
     if(s == NULL) {
         return;
     }
+    // la sesión deja de estar viva: libera su cupo de MGMT_MAX_SESSIONS y sale
+    // del recorrido del barrido (que si no la seguiría viendo desde el pool)
+    mgmt_live_unlink(s);
     // si el cliente murió a mitad de un ACCESS_LOG la foto sigue viva; se
     // libera acá y no al reusar del pool (mgmt_new pisa el puntero con memset)
     free(s->log_lines);
@@ -936,6 +1025,7 @@ mgmt_done(struct selector_key *key);
 static void
 mgmt_read(struct selector_key *key) {
     struct state_machine *stm = &MGMT_ATTACHMENT(key)->stm;
+    mgmt_touch(MGMT_ATTACHMENT(key));
     const unsigned st = stm_handler_read(stm, key);
 
     if(MGMT_ERROR == st || MGMT_DONE == st) {
@@ -946,6 +1036,7 @@ mgmt_read(struct selector_key *key) {
 static void
 mgmt_write(struct selector_key *key) {
     struct state_machine *stm = &MGMT_ATTACHMENT(key)->stm;
+    mgmt_touch(MGMT_ATTACHMENT(key));
     const unsigned st = stm_handler_write(stm, key);
 
     if(MGMT_ERROR == st || MGMT_DONE == st) {
@@ -993,6 +1084,19 @@ mgmt_passive_accept(struct selector_key *key) {
     if(client == -1) {
         goto fail;
     }
+    // tope de sesiones concurrentes. Se acepta igual y se rechaza con una línea
+    // de protocolo, en vez de dejar la conexión esperando en la cola de accept:
+    // el pasivo es level-triggered, así que una conexión pendiente lo mantiene
+    // readable y el selector volvería a llamarnos en cada vuelta del loop.
+    // Aceptar-y-cerrar la drena y le da al cliente un motivo en vez de un
+    // cierre mudo. El send es best-effort (socket recién nacido, buffer vacío:
+    // la línea entra entera); si fallara, el cliente igual ve el cierre.
+    if(live_count >= MGMT_MAX_SESSIONS) {
+        static const char full[] = "-ERR too many sessions\n";
+        send(client, full, sizeof(full) - 1, MSG_NOSIGNAL);
+        close(client);
+        return;
+    }
     if(selector_fd_set_nio(client) == -1) {
         goto fail;
     }
@@ -1018,4 +1122,37 @@ fail:
         close(client);
     }
     mgmt_session_destroy(state);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Barrido de inactividad
+
+void
+mgmt_sweep_timeouts(fd_selector s) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const time_t now = ts.tv_sec;
+
+    struct mgmt_session *next;
+    for(struct mgmt_session *c = live_head; c != NULL; c = next) {
+        // el cierre destruye el nodo actual: guardar el siguiente antes
+        next = c->live_next;
+        const unsigned state = stm_state(&c->stm);
+        if(state == MGMT_DONE || state == MGMT_ERROR) {
+            continue;   // ya están muriendo solas
+        }
+        // el umbral depende de si la sesión llegó a autenticarse: la que no lo
+        // hizo no probó ser nadie y es la que un atacante puede abrir a
+        // voluntad (ver MGMT_NOAUTH_TIMEOUT)
+        const time_t timeout = (state == MGMT_AUTH) ? MGMT_IDLE_TIMEOUT
+                                                    : MGMT_NOAUTH_TIMEOUT;
+        if(now - c->last_activity >= timeout) {
+            struct selector_key key = {
+                .s    = s,
+                .fd   = c->client_fd,
+                .data = c,
+            };
+            mgmt_done(&key);   // desregistra -> mgmt_close cierra y libera
+        }
+    }
 }

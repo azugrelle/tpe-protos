@@ -17,6 +17,14 @@
 void
 mgmt_passive_accept(struct selector_key *key);
 
+/**
+ * cierra las sesiones de monitoreo inactivas (umbral más corto para las que
+ * todavía no autenticaron). Espejo de socksv5_sweep_timeouts: el mismo barrido
+ * del loop principal recorre las dos poblaciones.
+ */
+void
+mgmt_sweep_timeouts(fd_selector s);
+
 /** libera el pool de sesiones reutilizables */
 void
 mgmt_pool_destroy(void);
