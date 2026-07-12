@@ -1,0 +1,4 @@
+# Normaliza los fines de linea a LF en el repo y en el working tree. Sin esto, un
+# editor que guarde en CRLF reescribe el archivo entero: el diff real queda
+# enterrado en cientos de lineas no-op y el `git blame` se contamina.
+* text=auto eol=lf
