@@ -339,7 +339,10 @@ selector_register(fd_selector        s,
     }
     // 1. tenemos espacio?
     size_t ufd = (size_t)fd;
-    if(ufd > s->fd_size) {
+    // >= y no >: los índices válidos de fds son 0..fd_size-1, así que ufd ==
+    // fd_size ya está fuera de rango y hay que crecer antes de indexar (si no,
+    // el `s->fds + ufd' de abajo escribe un elemento pasado el final).
+    if(ufd >= s->fd_size) {
         ret = ensure_capacity(s, ufd);
         if(SELECTOR_SUCCESS != ret) {
             goto finally;

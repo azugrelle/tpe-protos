@@ -151,6 +151,42 @@ START_TEST (test_selector_register_unregister_register) {
 }
 END_TEST
 
+// Regresión del off-by-one de selector_register: los índices válidos de `fds'
+// son 0..fd_size-1, así que registrar el fd == fd_size tiene que HACER CRECER
+// el arreglo antes de indexar. Con la guarda vieja (`ufd > fd_size') no crecía
+// y escribía un elemento pasado el final (heap-overflow, lo caza ASan). Acá el
+// chequeo determinista sin ASan es que fd_size haya crecido: con el bug se
+// queda igual y el assert falla.
+START_TEST (test_selector_register_grows_at_boundary) {
+    destroy_count = 0;
+    // inicial chico a propósito: el fd de borde (== fd_size) tiene que quedar
+    // por debajo de ITEMS_MAX_SIZE para no ser rechazado por INVALID_FD antes
+    // de llegar al camino de crecimiento.
+    fd_selector s = selector_new(10);
+    ck_assert_ptr_nonnull(s);
+
+    const size_t boundary = s->fd_size;   // primer índice fuera de rango
+    ck_assert_uint_lt(boundary, (size_t) ITEMS_MAX_SIZE);
+    const int fd = (int) boundary;
+
+    const struct fd_handler h = {
+        .handle_close = destroy_callback,
+    };
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_register(s, fd, &h, 0, data_mark));
+    // el arreglo tuvo que crecer para que `fd' sea un índice válido
+    ck_assert_uint_gt(s->fd_size, boundary);
+
+    const struct item *item = s->fds + fd;
+    ck_assert_int_eq (fd,        item->fd);
+    ck_assert_ptr_eq (&h,        item->handler);
+    ck_assert_ptr_eq (data_mark, item->data);
+
+    selector_destroy(s);
+    ck_assert_uint_eq(1, destroy_count);
+}
+END_TEST
+
 static unsigned block_count = 0;
 static void
 block_callback(struct selector_key *key) {
@@ -304,6 +340,7 @@ suite(void) {
     tcase_add_test(tc, test_ensure_capacity);
     tcase_add_test(tc, test_selector_register_fd);
     tcase_add_test(tc, test_selector_register_unregister_register);
+    tcase_add_test(tc, test_selector_register_grows_at_boundary);
     tcase_add_test(tc, test_notify_block_job);
     tcase_add_test(tc, test_notify_block_concurrent);
     // si una regresión hiciera que el drenaje sostenga resolution_mutex
