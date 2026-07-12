@@ -17,6 +17,8 @@
 #include <errno.h>
 #include <signal.h>
 
+#include <time.h>
+
 #include <unistd.h>
 #include <sys/types.h>   // socket
 #include <sys/socket.h>  // socket
@@ -26,6 +28,7 @@
 
 // #include "include/socks5.h"
 #include "selector.h"
+#include "config.h"
 #include "metrics.h"
 #include "include/socks5nio.h"
 #include "states/include/state_connect.h"   // resolve_shutdown_wait
@@ -33,6 +36,16 @@
 #include "include/args.h"
 #include "utils/include/user_auth_utils.h"
 
+
+/**
+ * cota superior, en segundos, del intervalo entre barridos de inactividad.
+ * El intervalo efectivo es el mínimo entre esta cota y el `timeout' vigente:
+ * con el default de 300s se barre cada 5s, y con un `CONFIG timeout' chico se
+ * barre cada `timeout' segundos. Barrer más seguido que el propio timeout no
+ * puede cambiar ninguna decisión —su granularidad es de un segundo—, así que
+ * es trabajo tirado a la basura.
+ */
+#define SWEEP_INTERVAL_MAX 5
 
 /**
  * cantidad de señales de terminación recibidas (SIGTERM/SIGINT). La 1ª pide
@@ -181,14 +194,17 @@ main(const int argc, char **argv) {
         err_msg = "getting server socket flags";
         goto finally;
     }
-    // 1s: es el tick del barrido de inactividad (el pselect retorna a más
-    // tardar acá aunque no haya eventos, y a la vuelta corre el barrido).
-    // Con más, un CONFIG timeout chico tardaría hasta el tick de más en
-    // aplicarse; el wakeup por segundo con el server ocioso es despreciable.
+    // el pselect retorna a más tardar acá aunque no haya eventos: con el
+    // server ocioso, este tick es lo que hace correr el barrido. Alcanza con
+    // que iguale la cota del barrido, porque el contrato del timeout es "se
+    // cierra tras AL MENOS N segundos de inactividad", no "exactamente a los
+    // N": un tick de T solo demora el cierre hasta T segundos. Un CONFIG que
+    // baje el timeout tampoco espera al tick — llega por el socket de
+    // monitoreo, o sea despierta al pselect con un evento.
     const struct selector_init conf = {
         .signal = SIGALRM,
         .select_timeout = {
-            .tv_sec  = 1,
+            .tv_sec  = SWEEP_INTERVAL_MAX,
             .tv_nsec = 0,
         },
     };
@@ -266,6 +282,12 @@ main(const int argc, char **argv) {
     }
 
     bool draining = false;
+    // momento del último barrido de inactividad. Sin este reloj el barrido
+    // correría en CADA vuelta del loop —selector_select retorna ante
+    // cualquier evento, no solo al vencer el tick—, recorriendo entera la
+    // lista de conexiones vivas miles de veces por segundo bajo carga para
+    // redescubrir que ninguna llegó al timeout.
+    time_t last_sweep = 0;
     for(;;) {
         // 1ª señal: dejar de aceptar conexiones nuevas (cerrar ambos pasivos)
         // y drenar las activas. Blanquearlos a -1 deja el finally idempotente:
@@ -298,8 +320,18 @@ main(const int argc, char **argv) {
         }
         // barrido de inactividad: cierra conexiones sin actividad hace más
         // del timeout de la config. Corre también durante el drenado (cerrar
-        // ociosas solo ayuda a que el drenado termine antes).
-        socksv5_sweep_timeouts(selector);
+        // ociosas solo ayuda a que el drenado termine antes), pero a lo sumo
+        // una vez cada `sweep_interval': así el costo pasa de O(conexiones
+        // vivas) por evento a O(conexiones vivas) por intervalo.
+        const unsigned timeout = config_get_timeout();
+        const time_t sweep_interval = timeout < SWEEP_INTERVAL_MAX
+                                    ? (time_t) timeout : SWEEP_INTERVAL_MAX;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if(now.tv_sec - last_sweep >= sweep_interval) {
+            last_sweep = now.tv_sec;
+            socksv5_sweep_timeouts(selector);
+        }
     }
     // salida por señal: apagado pedido, no un error (exit 0)
     fprintf(stdout, "clean shutdown\n");
