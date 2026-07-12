@@ -293,6 +293,14 @@ selector_new(const size_t initial_elements) {
 }
 
 void
+selector_set_timeout(fd_selector s, const struct timespec *timeout) {
+    if(s != NULL && timeout != NULL) {
+        s->master_t.tv_sec  = timeout->tv_sec;
+        s->master_t.tv_nsec = timeout->tv_nsec;
+    }
+}
+
+void
 selector_destroy(fd_selector s) {
     // lean ya que se llama desde los casos fallidos de _new.
     if(s != NULL) {
@@ -595,7 +603,7 @@ finally:
 int
 selector_fd_set_nio(const int fd) {
     int ret = 0;
-    int flags = fcntl(fd, F_GETFD, 0);
+    int flags = fcntl(fd, F_GETFL, 0);
     if(flags == -1) {
         ret = -1;
     } else {

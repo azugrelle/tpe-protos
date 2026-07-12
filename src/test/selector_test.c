@@ -330,6 +330,28 @@ START_TEST (test_notify_block_concurrent) {
 }
 END_TEST
 
+START_TEST (test_fd_set_nio_preserves_status_flags) {
+    // O_NONBLOCK es un file status flag: se agrega a los que el fd ya trae,
+    // no los reemplaza. O_APPEND es el testigo de que no se pisaron.
+    const int fd = open("/dev/null", O_WRONLY | O_APPEND);
+    ck_assert_int_ne(-1, fd);
+
+    const int before = fcntl(fd, F_GETFL, 0);
+    ck_assert_int_ne(-1, before);
+    ck_assert_int_eq(O_APPEND, before & O_APPEND);
+    ck_assert_int_eq(0, before & O_NONBLOCK);
+
+    ck_assert_int_eq(0, selector_fd_set_nio(fd));
+
+    const int after = fcntl(fd, F_GETFL, 0);
+    ck_assert_int_ne(-1, after);
+    ck_assert_int_eq(O_NONBLOCK, after & O_NONBLOCK);
+    ck_assert_int_eq(O_APPEND, after & O_APPEND);
+
+    close(fd);
+}
+END_TEST
+
 Suite *
 suite(void) {
     Suite *s  = suite_create("nio");
@@ -341,6 +363,7 @@ suite(void) {
     tcase_add_test(tc, test_selector_register_fd);
     tcase_add_test(tc, test_selector_register_unregister_register);
     tcase_add_test(tc, test_selector_register_grows_at_boundary);
+    tcase_add_test(tc, test_fd_set_nio_preserves_status_flags);
     tcase_add_test(tc, test_notify_block_job);
     tcase_add_test(tc, test_notify_block_concurrent);
     // si una regresión hiciera que el drenaje sostenga resolution_mutex

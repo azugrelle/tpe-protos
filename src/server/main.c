@@ -194,13 +194,11 @@ main(const int argc, char **argv) {
         err_msg = "getting server socket flags";
         goto finally;
     }
-    // el pselect retorna a más tardar acá aunque no haya eventos: con el
-    // server ocioso, este tick es lo que hace correr el barrido. Alcanza con
-    // que iguale la cota del barrido, porque el contrato del timeout es "se
-    // cierra tras AL MENOS N segundos de inactividad", no "exactamente a los
-    // N": un tick de T solo demora el cierre hasta T segundos. Un CONFIG que
-    // baje el timeout tampoco espera al tick — llega por el socket de
-    // monitoreo, o sea despierta al pselect con un evento.
+    // valor inicial del tick: el pselect retorna a más tardar acá aunque no
+    // haya eventos, y con el server ocioso es lo único que hace correr el
+    // barrido. El loop lo reajusta en cada vuelta al intervalo de barrido
+    // vigente (ver `sweep_interval'), porque un tick más largo que ese
+    // intervalo pasaría a ser el piso real del barrido.
     const struct selector_init conf = {
         .signal = SIGALRM,
         .select_timeout = {
@@ -312,6 +310,22 @@ main(const int argc, char **argv) {
         if(sig_count >= 2 || (draining && socksv5_live_count() == 0)) {
             break;
         }
+        // cada cuánto puede correr, a lo sumo, el barrido de inactividad: el
+        // mínimo entre la cota y el timeout vigente. Barrer más seguido que el
+        // propio timeout no puede cambiar ninguna decisión (su granularidad es
+        // de un segundo), y el validador de CONFIG rechaza el 0, así que el
+        // intervalo nunca baja de 1s.
+        const unsigned timeout = config_get_timeout();
+        const time_t sweep_interval = timeout < SWEEP_INTERVAL_MAX
+                                    ? (time_t) timeout : SWEEP_INTERVAL_MAX;
+        // el tick del pselect acompaña al intervalo. Con el server ocioso no
+        // hay ningún evento que despierte al loop, así que el tick es lo que
+        // acota cuán tarde puede correr el barrido: dejarlo fijo en la cota
+        // haría que un `CONFIG timeout' chico igual esperara hasta la cota, y
+        // el intervalo derivado no serviría de nada.
+        const struct timespec tick = { .tv_sec = sweep_interval, .tv_nsec = 0 };
+        selector_set_timeout(selector, &tick);
+
         err_msg = NULL;
         ss = selector_select(selector);
         if(ss != SELECTOR_SUCCESS) {
@@ -324,9 +338,6 @@ main(const int argc, char **argv) {
         // ociosas solo ayuda a que el drenado termine antes), pero a lo sumo
         // una vez cada `sweep_interval': así el costo pasa de O(conexiones
         // vivas) por evento a O(conexiones vivas) por intervalo.
-        const unsigned timeout = config_get_timeout();
-        const time_t sweep_interval = timeout < SWEEP_INTERVAL_MAX
-                                    ? (time_t) timeout : SWEEP_INTERVAL_MAX;
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         if(now.tv_sec - last_sweep >= sweep_interval) {

@@ -86,6 +86,14 @@ selector_close(void);
 fd_selector
 selector_new(const size_t initial_elements);
 
+/**
+ * cambia el tiempo máximo de bloqueo de `selector_select' para este selector.
+ * Sirve para que el usuario ajuste el tick en caliente: sin esto, el valor de
+ * `selector_init' queda fijo por toda la vida del selector. Tolera NULLs.
+ */
+void
+selector_set_timeout(fd_selector s, const struct timespec *timeout);
+
 /** destruye un selector creado por _new. Tolera NULLs */
 void
 selector_destroy(fd_selector s);
