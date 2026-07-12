@@ -13,8 +13,11 @@
 extern const char *
 sockaddr_to_human(char *buff, const size_t buffsize,
                   const struct sockaddr *addr) {
+    if(buffsize == 0) {
+        return buff;
+    }
     if(addr == 0) {
-        strncpy(buff, "null", buffsize);
+        snprintf(buff, buffsize, "null");
         return buff;
     }
     in_port_t port;
@@ -35,21 +38,23 @@ sockaddr_to_human(char *buff, const size_t buffsize,
     }
     if(handled) {
         if (inet_ntop(addr->sa_family, p,  buff, buffsize) == 0) {
-            strncpy(buff, "unknown ip", buffsize);
-            buff[buffsize - 1] = 0;
+            snprintf(buff, buffsize, "unknown ip");
         }
     } else {
-        strncpy(buff, "unknown", buffsize);
+        snprintf(buff, buffsize, "unknown");
     }
 
-    strncat(buff, ":", buffsize);
-    buff[buffsize - 1] = 0;
-    const size_t len = strlen(buff);
+    /* inet_ntop y snprintf terminan en NUL dentro de buffsize, así que
+     * len <= buffsize - 1 y el espacio restante nunca es cero. */
+    size_t len = strlen(buff);
+    if(len + 1 < buffsize) {
+        buff[len++] = ':';
+        buff[len]   = 0;
+    }
 
     if(handled) {
         snprintf(buff + len, buffsize - len, "%d", ntohs(port));
     }
-    buff[buffsize - 1] = 0;
 
     return buff;
 }

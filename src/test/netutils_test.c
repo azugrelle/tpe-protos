@@ -57,7 +57,38 @@ START_TEST (test_sockaddr_to_human_ipv6) {
 }
 END_TEST
 
-Suite * 
+START_TEST (test_sockaddr_to_human_unknown_family) {
+    char buff[50] = {0};
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_UNIX,
+        .sin_port   = htons(9090),
+    };
+    const struct sockaddr *x = (const struct sockaddr *) &addr;
+
+    ck_assert_str_eq(sockaddr_to_human(buff, sizeof(buff)/sizeof(buff[0]), x),
+                     "unknown:");
+    ck_assert_str_eq(sockaddr_to_human(buff, 1, x), "");
+    ck_assert_str_eq(sockaddr_to_human(buff, 4, x), "unk");
+    ck_assert_str_eq(sockaddr_to_human(buff, 8, x), "unknown");
+    ck_assert_str_eq(sockaddr_to_human(buff, 9, x), "unknown:");
+}
+END_TEST
+
+
+START_TEST (test_sockaddr_to_human_null) {
+    char buff[50] = {0};
+
+    ck_assert_str_eq(sockaddr_to_human(buff, sizeof(buff)/sizeof(buff[0]), 0),
+                     "null");
+    ck_assert_str_eq(sockaddr_to_human(buff, 1, 0), "");
+    ck_assert_str_eq(sockaddr_to_human(buff, 3, 0), "nu");
+    ck_assert_str_eq(sockaddr_to_human(buff, 5, 0), "null");
+}
+END_TEST
+
+
+Suite *
 hello_suite(void) {
     Suite *s;
     TCase *tc;
@@ -69,6 +100,8 @@ hello_suite(void) {
 
     tcase_add_test(tc, test_sockaddr_to_human_ipv4);
     tcase_add_test(tc, test_sockaddr_to_human_ipv6);
+    tcase_add_test(tc, test_sockaddr_to_human_unknown_family);
+    tcase_add_test(tc, test_sockaddr_to_human_null);
     suite_add_tcase(s, tc);
 
     return s;
