@@ -8,6 +8,13 @@
  * se copia en streaming, leyendo hasta llenar el buffer y escribiendo lo que
  * se pueda.
  *
+ * El camino común es select → read → write: tras cada recv se intenta drenar
+ * el buffer hacia el peer ahí mismo (`copy_flush'), sin esperar a que el
+ * selector reporte el fd escribible en una vuelta aparte —el socket casi
+ * siempre está escribible y esperar duplicaría iteraciones del select—. Solo
+ * si el send no drena todo (EAGAIN o envío parcial) los bytes quedan
+ * buffereados, OP_WRITE se arma y el envío continúa por `copy_w'.
+ *
  * El backpressure sale del recomputo de intereses tras cada I/O
  * (`copy_compute_interests'): un fd solo interesa para lectura si su buffer
  * destino tiene lugar, y para escritura si su buffer fuente tiene datos. Un
@@ -91,6 +98,50 @@ copy_finished(struct copy *d) {
     return d->duplex == OP_NOOP && d->other->duplex == OP_NOOP;
 }
 
+/**
+ * intenta drenar el buffer fuente de `d' hacia su fd, con la propagación
+ * diferida del FIN. Lo usan copy_w (evento de escritura del selector) y
+ * copy_r (envío inmediato tras el recv, sin esperar otra vuelta del select).
+ * Si el send no drena todo (EAGAIN o envío parcial), el recomputo de
+ * intereses arma OP_WRITE y el resto sale por copy_w. El fd se toma del
+ * struct y no de la llave: cuando llama copy_r, key->fd es el del lector.
+ */
+static unsigned
+copy_flush(struct selector_key *key, struct copy *d) {
+     uint8_t *ptr;
+      size_t  count;
+     ssize_t  n;
+
+    ptr = buffer_read_ptr(d->wb, &count);
+    if(count == 0) {
+        // nada que enviar (evento espurio o el flush anterior ya drenó).
+        return copy_refresh_interests(key, d) ? COPY : ERROR;
+    }
+
+    n = send(*d->fd, ptr, count, MSG_NOSIGNAL);
+    if(n == -1) {
+        if(!transient_io_error()) {
+            return ERROR;
+        }
+        // los bytes quedan buffereados; el recomputo arma OP_WRITE y el
+        // envío se reintenta cuando el selector reporte el fd escribible.
+        return copy_refresh_interests(key, d) ? COPY : ERROR;
+    }
+
+    buffer_read_adv(d->wb, n);
+    // si este era el último tramo de un sentido que ya vio EOF (el lado que
+    // alimenta este buffer perdió OP_READ), acá se propaga el FIN diferido.
+    if(!buffer_can_read(d->wb) && !(d->other->duplex & OP_READ)) {
+        if(!copy_shutdown_wr(d)) {
+            return ERROR;
+        }
+        if(copy_finished(d)) {
+            return DONE;
+        }
+    }
+    return copy_refresh_interests(key, d) ? COPY : ERROR;
+}
+
 unsigned
 copy_start(struct selector_key *key) {
     struct socks5 *s = ATTACHMENT(key);
@@ -164,38 +215,13 @@ copy_r(struct selector_key *key) {
     // los bytes se cuentan una sola vez por sentido: en el recv (contarlos
     // también al enviarlos duplicaría).
     metrics_bytes_transferred(n);
-    return copy_refresh_interests(key, d) ? COPY : ERROR;
+    // select → read → write: los bytes recién leídos se intentan enviar al
+    // peer en este mismo evento (d->rb es el buffer fuente del otro lado),
+    // sin esperar a que el selector reporte OP_WRITE en otra vuelta.
+    return copy_flush(key, d->other);
 }
 
 unsigned
 copy_w(struct selector_key *key) {
-    struct copy *d = copy_ptr(key);
-
-     uint8_t *ptr;
-      size_t  count;
-     ssize_t  n;
-
-    ptr = buffer_read_ptr(d->wb, &count);
-    if(count == 0) {
-        // evento espurio con el buffer fuente vacío: nada que enviar.
-        return copy_refresh_interests(key, d) ? COPY : ERROR;
-    }
-
-    n = send(key->fd, ptr, count, MSG_NOSIGNAL);
-    if(n == -1) {
-        return transient_io_error() ? COPY : ERROR;
-    }
-
-    buffer_read_adv(d->wb, n);
-    // si este era el último tramo de un sentido que ya vio EOF (el lado que
-    // alimenta este buffer perdió OP_READ), acá se propaga el FIN diferido.
-    if(!buffer_can_read(d->wb) && !(d->other->duplex & OP_READ)) {
-        if(!copy_shutdown_wr(d)) {
-            return ERROR;
-        }
-        if(copy_finished(d)) {
-            return DONE;
-        }
-    }
-    return copy_refresh_interests(key, d) ? COPY : ERROR;
+    return copy_flush(key, copy_ptr(key));
 }

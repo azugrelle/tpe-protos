@@ -247,21 +247,17 @@ START_TEST (test_relay_client_to_origin) {
     reset_injection();
     ck_assert_uint_eq(COPY, copy_start(&key));
 
-    // el cliente manda bytes → copy_r los deposita en read_buffer
+    // el cliente manda bytes → copy_r los lee y los reenvía al origen en el
+    // mismo evento (select → read → write, sin esperar otra vuelta)
     ck_assert_int_eq(5, write(t.client_peer, "hola!", 5));
     struct selector_key rkey = key_for(&t, t.s.client_fd);
     ck_assert_uint_eq(COPY, copy_r(&rkey));
-    ck_assert(buffer_can_read(&t.s.read_buffer));
-    // con datos cliente→origen pendientes, el origen queda con OP_WRITE
-    ck_assert_uint_eq(OP_READ | OP_WRITE, g_interest[t.s.origin_fd]);
 
-    // el origen queda escribible → copy_w drena hacia el origin_fd
-    struct selector_key wkey = key_for(&t, t.s.origin_fd);
-    ck_assert_uint_eq(COPY, copy_w(&wkey));
     char got[16];
     ck_assert_int_eq(5, read(t.origin_peer, got, sizeof(got)));
     ck_assert_int_eq(0, memcmp("hola!", got, 5));
-    // drenado: el origen vuelve a interesarse solo por lectura
+    // drenado en el mismo evento: nada pendiente ni OP_WRITE armado
+    ck_assert(!buffer_can_read(&t.s.read_buffer));
     ck_assert_uint_eq(OP_READ, g_interest[t.s.origin_fd]);
 
     conn_close(&t);
@@ -275,16 +271,45 @@ START_TEST (test_relay_origin_to_client) {
     reset_injection();
     ck_assert_uint_eq(COPY, copy_start(&key));
 
+    // el origen responde → copy_r lee y reenvía al cliente en el mismo evento
     ck_assert_int_eq(9, write(t.origin_peer, "respuesta", 9));
     struct selector_key rkey = key_for(&t, t.s.origin_fd);
     ck_assert_uint_eq(COPY, copy_r(&rkey));
-    ck_assert_uint_eq(OP_READ | OP_WRITE, g_interest[t.s.client_fd]);
 
-    struct selector_key wkey = key_for(&t, t.s.client_fd);
-    ck_assert_uint_eq(COPY, copy_w(&wkey));
     char got[16];
     ck_assert_int_eq(9, read(t.client_peer, got, sizeof(got)));
     ck_assert_int_eq(0, memcmp("respuesta", got, 9));
+    ck_assert(!buffer_can_read(&t.s.write_buffer));
+    ck_assert_uint_eq(OP_READ, g_interest[t.s.client_fd]);
+
+    conn_close(&t);
+}
+END_TEST
+
+START_TEST (test_relay_send_eagain_falls_back_to_op_write) {
+    // si el envío inmediato tras el recv da EAGAIN, los bytes quedan
+    // buffereados y el peer queda con OP_WRITE: se cae al esquema
+    // select → write clásico sin perder nada.
+    struct test_conn t;
+    conn_init(&t);
+    struct selector_key key = key_for(&t, t.s.client_fd);
+    reset_injection();
+    ck_assert_uint_eq(COPY, copy_start(&key));
+
+    ck_assert_int_eq(5, write(t.client_peer, "hola!", 5));
+    g_send_inject_errno = EAGAIN;
+    struct selector_key rkey = key_for(&t, t.s.client_fd);
+    ck_assert_uint_eq(COPY, copy_r(&rkey));
+    ck_assert(buffer_can_read(&t.s.read_buffer));
+    ck_assert_uint_eq(OP_READ | OP_WRITE, g_interest[t.s.origin_fd]);
+
+    // el fd se vuelve escribible → copy_w drena
+    g_send_inject_errno = 0;
+    struct selector_key wkey = key_for(&t, t.s.origin_fd);
+    ck_assert_uint_eq(COPY, copy_w(&wkey));
+    char got[16];
+    ck_assert_int_eq(5, read(t.origin_peer, got, sizeof(got)));
+    ck_assert_int_eq(0, memcmp("hola!", got, 5));
 
     conn_close(&t);
 }
@@ -503,13 +528,16 @@ START_TEST (test_deferred_shutdown_flushes_in_flight_bytes) {
     ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
     g_shutdown_wr_calls = 0;
 
+    // el envío inmediato tras el recv da EAGAIN: "tail" queda en vuelo
+    g_send_inject_errno = EAGAIN;
     struct selector_key rkey = key_for(&t, t.s.client_fd);
-    ck_assert_uint_eq(COPY, copy_r(&rkey));   // lee "tail"
+    ck_assert_uint_eq(COPY, copy_r(&rkey));   // lee "tail" (send diferido)
     ck_assert_uint_eq(COPY, copy_r(&rkey));   // ve el EOF
     // hay bytes en vuelo: el FIN quedó pendiente
     ck_assert_int_eq(0, g_shutdown_wr_calls);
 
     // el drenado hacia el origen dispara el FIN diferido
+    g_send_inject_errno = 0;
     struct selector_key wkey = key_for(&t, t.s.origin_fd);
     ck_assert_uint_eq(COPY, copy_w(&wkey));
     ck_assert_int_eq(1, g_shutdown_wr_calls);
@@ -665,40 +693,36 @@ START_TEST (test_metrics_not_counted_on_failed_recv) {
 END_TEST
 
 START_TEST (test_full_half_close_lifecycle) {
-    // ciclo completo estilo HTTP/1.0: el cliente manda el pedido y cierra su
-    // escritura; el proxy entrega pedido+FIN al origen; el origen responde y
-    // cierra; el cliente recibe la respuesta completa y la conexión termina.
+    // ciclo completo estilo HTTP/1.0 con el envío inmediato: cada copy_r
+    // entrega los bytes al peer en el mismo evento; los FIN se propagan al
+    // ver cada EOF (los buffers ya están drenados por el flush).
     struct test_conn t;
     conn_init(&t);
     struct selector_key key = key_for(&t, t.s.client_fd);
     reset_injection();
     ck_assert_uint_eq(COPY, copy_start(&key));
 
-    // cliente: pedido + half-close
+    // cliente: pedido + half-close; "GET" llega al origen en el mismo copy_r
     ck_assert_int_eq(3, write(t.client_peer, "GET", 3));
     ck_assert_int_eq(0, shutdown(t.client_peer, SHUT_WR));
     struct selector_key crkey = key_for(&t, t.s.client_fd);
-    ck_assert_uint_eq(COPY, copy_r(&crkey));   // lee "GET"
-    ck_assert_uint_eq(COPY, copy_r(&crkey));   // EOF (FIN diferido: hay bytes)
+    ck_assert_uint_eq(COPY, copy_r(&crkey));   // lee y reenvía "GET"
+    ck_assert_uint_eq(COPY, copy_r(&crkey));   // EOF ⇒ FIN al origen (nada en vuelo)
 
-    // el origen recibe pedido + FIN
-    struct selector_key owkey = key_for(&t, t.s.origin_fd);
-    ck_assert_uint_eq(COPY, copy_w(&owkey));
+    // el origen ya tiene pedido + FIN, sin ningún copy_w de por medio
     char got[16];
     ck_assert_int_eq(3, read(t.origin_peer, got, sizeof(got)));
     ck_assert_int_eq(0, memcmp("GET", got, 3));
     ck_assert_int_eq(0, read(t.origin_peer, got, sizeof(got)));
 
-    // el origen responde y cierra
+    // el origen responde y cierra: "OK" llega al cliente en el mismo copy_r
+    // y el EOF final termina ambos sentidos
     ck_assert_int_eq(2, write(t.origin_peer, "OK", 2));
     ck_assert_int_eq(0, shutdown(t.origin_peer, SHUT_WR));
     struct selector_key orkey = key_for(&t, t.s.origin_fd);
-    ck_assert_uint_eq(COPY, copy_r(&orkey));   // lee "OK"
-    ck_assert_uint_eq(COPY, copy_r(&orkey));   // EOF (FIN diferido: hay bytes)
+    ck_assert_uint_eq(COPY, copy_r(&orkey));   // lee y reenvía "OK"
+    ck_assert_uint_eq(DONE, copy_r(&orkey));   // EOF ⇒ fin total
 
-    // el cliente recibe la respuesta completa; drenar cierra todo
-    struct selector_key cwkey = key_for(&t, t.s.client_fd);
-    ck_assert_uint_eq(DONE, copy_w(&cwkey));
     ck_assert_int_eq(2, read(t.client_peer, got, sizeof(got)));
     ck_assert_int_eq(0, memcmp("OK", got, 2));
     ck_assert_int_eq(0, read(t.client_peer, got, sizeof(got)));
@@ -735,6 +759,7 @@ suite(void) {
     tcase_add_test(tc, test_start_setinterest_failure_returns_error);
     tcase_add_test(tc, test_relay_client_to_origin);
     tcase_add_test(tc, test_relay_origin_to_client);
+    tcase_add_test(tc, test_relay_send_eagain_falls_back_to_op_write);
     tcase_add_test(tc, test_pipelined_bytes_flow_without_recv);
     tcase_add_test(tc, test_backpressure_full_buffer_drops_read);
     tcase_add_test(tc, test_copy_r_full_buffer_does_not_recv);
