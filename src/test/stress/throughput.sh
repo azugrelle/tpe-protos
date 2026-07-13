@@ -36,6 +36,13 @@ ADMIN="admin:secreto"
 PROXY_USER="alice"
 PROXY_PASS="pass1"
 
+# el default se lee del header, no se transcribe: la medicion "a traves del
+# proxy" se rotula con el buf_size real con el que corrio, y el barrido lo
+# restaura al terminar
+DEFAULT_BUF="$(sed -n 's/^#define CONFIG_BUF_SIZE_DEFAULT[[:space:]]*//p' \
+                   "$REPO/src/shared/include/config.h")"
+[ -n "$DEFAULT_BUF" ] || { echo "no se pudo leer CONFIG_BUF_SIZE_DEFAULT" >&2; exit 2; }
+
 for dep in curl python3 dd awk sort; do
     command -v "$dep" >/dev/null 2>&1 || { echo "falta $dep" >&2; exit 2; }
 done
@@ -147,7 +154,7 @@ echo "descarga directa (sin proxy):   $(mbs "$DIRECT") MB/s"
 
 # ---- 2. a traves del proxy, una conexion ---------------------------------------
 PROXIED="$(runs_median curl_proxied)" || fail "descarga via proxy"
-echo "a traves del proxy (buf 2048):  $(mbs "$PROXIED") MB/s"
+echo "a traves del proxy (buf $DEFAULT_BUF):  $(mbs "$PROXIED") MB/s"
 awk -v d="$DIRECT" -v p="$PROXIED" 'BEGIN {
     printf "relacion proxy/directo:         %.0f%%\n", p * 100 / d
     if (p > d * 0.9)
@@ -197,7 +204,7 @@ for size in $BUF_SIZES; do
     all="$(echo "$speeds" | awk '{ printf "%.1f ", $1 / 1048576 }')"
     printf '%-10s %-12s %s\n' "$size" "$(mbs "$med")" "$all"
 done
-mgmt config buf_size 2048 >/dev/null   # volver al default
+mgmt config buf_size "$DEFAULT_BUF" >/dev/null   # volver al default
 
 echo
 # los flags salen de Makefile.inc, no de una transcripcion a mano: interpretar

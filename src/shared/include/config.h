@@ -26,7 +26,13 @@
 
 /**
  * tamaño de los buffers de I/O de una conexión del proxy, en bytes (máx
- * 1 MiB). El default replica el tamaño histórico de `struct socks5'.
+ * 1 MiB).
+ *
+ * El default sale de medir: el buffer fija cuántos bytes mueve cada syscall,
+ * así que el costo por byte del relay cae al agrandarlo. En loopback (donde el
+ * cuello de botella es el proxy y no la red) 8192 rinde ~2x que 2048; de ahí
+ * para arriba la ganancia sigue pero ya compite con el costo de memoria, que
+ * es de 2 buffers por conexión y escala con la concurrencia.
  *
  * El mínimo lo fija la respuesta más grande que se serializa ENTERA de un
  * marshall: el reply del REQUEST con BND.ADDR IPv6 (VER+REP+RSV+ATYP + 16 de
@@ -36,7 +42,7 @@
  */
 #define CONFIG_BUF_SIZE_MIN     22
 #define CONFIG_BUF_SIZE_MAX     1048576
-#define CONFIG_BUF_SIZE_DEFAULT 2048
+#define CONFIG_BUF_SIZE_DEFAULT 8192
 
 unsigned config_get_timeout(void);
 void     config_set_timeout(unsigned seconds);

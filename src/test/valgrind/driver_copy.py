@@ -58,9 +58,9 @@ for _ in range(N):
         o.sendall(b"pong")
         if recv_exact(c, 4) != b"pong":
             raise OSError("relay vuelta rota")
-        # bytes extra en transito (mas que el buffer de 2048) sin drenar del
-        # todo: el teardown agarra al relay en pleno trabajo
-        c.sendall(b"x" * 4096)
+        # bytes extra en transito, muy por encima del buffer de una conexion,
+        # sin drenar del todo: el teardown agarra al relay en pleno trabajo
+        c.sendall(b"x" * 32768)
         held.append((c, o))
     except OSError as e:
         print(f"driver: {e}", file=sys.stderr)

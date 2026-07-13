@@ -8,7 +8,7 @@ requieren red externa: el "origen" es un `http.server` de Python local.
 
 Valida el relay bidireccional con tráfico real: baja un archivo de 5MB
 a través del proxy y compara `sha256sum` contra el original (el archivo es ≫
-que los buffers de 2048 bytes, así que ejercita I/O parcial y backpressure).
+que los buffers de una conexión, así que ejercita I/O parcial y backpressure).
 Corre dos transferencias:
 
 1. con `curl --socks5-hostname` (el camino típico de un cliente real), y
