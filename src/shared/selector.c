@@ -409,7 +409,11 @@ selector_unregister_fd(fd_selector       s,
 
     memset(item, 0x00, sizeof(*item));
     item_init(item);
-    s->max_fd = items_max_fd(s);
+
+    // el maximo solo puede bajar si justamente sacamos el fd que era el maximo
+    if(fd == s->max_fd) {
+        s->max_fd = items_max_fd(s);
+    }
 
 finally:
     return ret;
