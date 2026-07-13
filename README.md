@@ -7,7 +7,7 @@ autenticación usuario/contraseña (RFC 1929) y administración en caliente:
   DNS asíncrona y reintento sobre todas las direcciones del destino.
 - **Protocolo de monitoreo**: protocolo de texto propio, en un puerto aparte,
   para consultar métricas, gestionar usuarios y cambiar la configuración en
-  runtime sin reiniciar ([especificación](src/docs/monitoring_protocol.md)).
+  runtime sin reiniciar ([especificación](doc/rfc-monitoreo.md)).
 - **Cliente de monitoreo**: aplicación de terminal, interactiva o por comando
   único, para operar el servidor.
 - **Métricas y registro de accesos**: conexiones históricas y concurrentes,
@@ -169,8 +169,8 @@ protocolo (`ADD_USER`, `ACCESS_LOG`, etc.). Los cambios hechos con `config`,
 servidor. `add-user` crea usuarios comunes: no permite crear administradores.
 
 El contrato completo, incluidos formatos de respuesta, límites y parámetros de
-configuración, está en
-[`src/docs/monitoring_protocol.md`](src/docs/monitoring_protocol.md).
+configuración, está en la especificación del protocolo:
+[`doc/rfc-monitoreo.md`](doc/rfc-monitoreo.md).
 
 <p align="right">(<a href="#tpe---protocolos-de-comunicación">Volver</a>)</p>
 
@@ -198,7 +198,8 @@ Materiales del repositorio:
 | `src/client/` | Cliente de monitoreo |
 | `src/shared/` | Infraestructura común: selector, buffers, máquina de estados, métricas, config |
 | `src/test/` | Tests unitarios (`check`) y de integración (`integration/`), más suite de valgrind (`valgrind/`) |
-| `src/docs/` | [Especificación del protocolo de monitoreo](src/docs/monitoring_protocol.md) |
+| `doc/` | [Especificación (estilo RFC) del protocolo de monitoreo](doc/rfc-monitoreo.md) |
+| `src/docs/` | [Documento de diseño del protocolo de monitoreo](src/docs/monitoring_protocol.md), insumo del RFC |
 | `Makefile` / `Makefile.inc` | Build (targets `all`, `server`, `client`, `test`, `integration-test`, `clean`) |
 
 Artefactos generados por `make` (no se versionan):

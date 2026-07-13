@@ -1,5 +1,10 @@
 # Protocolo de Monitoreo — Diseño 
 
+> **Rol de este documento:** diseño original del protocolo (T05), insumo de la
+> implementación y del RFC. La **especificación formal y autoritativa** es
+> [`doc/rfc-monitoreo.md`](../../doc/rfc-monitoreo.md); ante cualquier
+> diferencia, vale el RFC.
+
 ## 1. Descripción general
 
 Protocolo de texto orientado a línea, sobre TCP, en un socket pasivo independiente del
@@ -96,6 +101,7 @@ Si la lista está vacía:
 | Token no matchea ningún comando conocido | `-ERR unknown command` |
 | Comando reconocido con cantidad o formato de argumentos incorrecto (ej. `AUTH` con un solo token, `CONFIG` sin valor, `DEL_USER` sin argumento) | `-ERR invalid arguments` |
 | Comando antes de autenticarse (salvo `AUTH`/`QUIT`) | `-ERR not authenticated` |
+| Conexión nueva con el cupo de sesiones de monitoreo lleno | `-ERR too many sessions` **en lugar del saludo**, y se cierra la conexión |
 
 ## 6. Comandos
 
@@ -107,7 +113,7 @@ Si la lista está vacía:
 | `CONFIG` | `CONFIG <param> <valor>` | `+OK` / `-ERR unknown param` / `-ERR invalid value` |
 | `ADD_USER` | `ADD_USER <user> <pass>` | `+OK` / `-ERR user exists` / `-ERR user table full` |
 | `DEL_USER` | `DEL_USER <user>` | `+OK` / `-ERR user not found` / `-ERR cannot delete last admin` |
-| `ACCESS_LOG` | `ACCESS_LOG` o `ACCESS_LOG <user>` | multilínea: `<user> <domain>:<port> <timestamp> <status>` por línea |
+| `ACCESS_LOG` | `ACCESS_LOG` o `ACCESS_LOG <user>` | multilínea: `<user> <domain>:<port> <timestamp> <status>` por línea. `-ERR internal error` si el servidor no puede materializar la respuesta (agotamiento de recursos) |
 | `QUIT` | `QUIT` | `+OK bye` y cierra la conexión |
 
 ### Parámetros válidos de `CONFIG`
@@ -154,7 +160,7 @@ cronológico dentro de cada usuario.
 
 Ejemplo:
 ```
-alice www.google.com:80 2025-07-15T01:29:41Z SUCCESS
+alice www.google.com:80 2026-07-15T01:29:41Z SUCCESS
 ```
 
 ## 8. Ejemplo de sesión completa
@@ -192,7 +198,16 @@ S: +OK bye
 
 - Este protocolo corre como un segundo socket pasivo registrado en el mismo
   `selector.c`, con su propia máquina de estados (independiente de la STM de SOCKS5),
-  usando la misma infraestructura de `buffer.c`/`stm.c`/`parser.c` provista por la
-  cátedra.
+  usando la infraestructura de `buffer.c`/`stm.c` provista por la cátedra. (El
+  diseño original preveía usar también el motor genérico `parser.c`; la
+  implementación final usa un acumulador de líneas propio — el motor emite
+  eventos por carácter sin acumular, y para framing por línea igual habría que
+  acumular con límite y extraer el string; ver el comentario en `mgmt.c`.)
+- Límites de sesión (agregados al implementar; especificados en el RFC §4 y §12): a lo
+  sumo **16 sesiones** de monitoreo simultáneas — con el cupo lleno se responde
+  `-ERR too many sessions` en lugar del saludo y se cierra — y cierre **silencioso por
+  inactividad** (30 s una sesión sin autenticar, 600 s una autenticada). Protegen el
+  presupuesto de fds que el monitoreo comparte con el proxy en el mismo selector, y
+  acotan la fuerza bruta junto con el límite de intentos de `AUTH` (§3).
 - Este documento es el insumo directo de la implementación del handler de monitoreo y del RFC
   (formalización como RFC).

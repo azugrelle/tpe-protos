@@ -3,7 +3,7 @@
 ```
 Grupo 22 — ITBA, Protocolos de Comunicación 2026/1
 Categoría: Especificación de protocolo
-Estado: Borrador para el TPE
+Estado: Especificación final para el TPE
 ```
 
 ## Resumen
