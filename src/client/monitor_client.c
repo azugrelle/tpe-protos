@@ -312,7 +312,7 @@ login(struct monitor_conn *conn, const struct client_args *args,
 // framing esperar de la respuesta, y que nunca viaja una línea inválida.
 
 /** framing de la respuesta exitosa, fijado por comando (es una invariante
- *  del protocolo, no una heurística: ver src/docs/monitoring_protocol.md) */
+ *  del protocolo, no una heurística: ver doc/monitoring_protocol.md) */
 enum resp_kind {
     RESP_SINGLE,   /**< una sola línea: `+OK ...' */
     RESP_MULTI,    /**< `+OK' + cuerpo + `.': se acumula entera y luego se

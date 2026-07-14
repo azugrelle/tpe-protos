@@ -4,7 +4,7 @@
 /**
  * monitor_conn.h -- transporte del cliente de monitoreo: conexión TCP
  * bloqueante y framing por líneas del protocolo (texto terminado en '\n',
- * ver src/docs/monitoring_protocol.md).
+ * ver doc/monitoring_protocol.md).
  *
  * Todas las funciones reportan sus errores por stderr antes de devolver el
  * fallo, así el llamador solo decide el código de salida.

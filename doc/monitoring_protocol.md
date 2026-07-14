@@ -1,9 +1,9 @@
 # Protocolo de Monitoreo — Diseño 
 
-> **Rol de este documento:** diseño original del protocolo (T05), insumo de la
+> **Rol de este documento:** diseño original del protocolo, insumo de la
 > implementación y del RFC. La **especificación formal y autoritativa** es
-> [`doc/rfc-monitoreo.md`](../../doc/rfc-monitoreo.md); ante cualquier
-> diferencia, vale el RFC.
+> [`rfc-monitoreo.md`](rfc-monitoreo.md); ante cualquier diferencia, vale el
+> RFC.
 
 ## 1. Descripción general
 

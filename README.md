@@ -198,8 +198,7 @@ Materiales del repositorio:
 | `src/client/` | Cliente de monitoreo |
 | `src/shared/` | Infraestructura común: selector, buffers, máquina de estados, métricas, config |
 | `src/test/` | Tests unitarios (`check`) y de integración (`integration/`), más suite de valgrind (`valgrind/`) |
-| `doc/` | [Especificación (estilo RFC) del protocolo de monitoreo](doc/rfc-monitoreo.md) |
-| `src/docs/` | [Documento de diseño del protocolo de monitoreo](src/docs/monitoring_protocol.md), insumo del RFC |
+| `doc/` | [Especificación (estilo RFC) del protocolo de monitoreo](doc/rfc-monitoreo.md), el [documento de diseño](doc/monitoring_protocol.md) que fue su insumo y la [estructura del repositorio](doc/estructura.md) |
 | `Makefile` / `Makefile.inc` | Build (targets `all`, `server`, `client`, `test`, `integration-test`, `clean`) |
 
 Artefactos generados por `make` (no se versionan):
